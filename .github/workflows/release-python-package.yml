@@ -1,0 +1,92 @@
+name: release-python-package (reusable)
+
+# Reusable workflow: build a Python package and publish it to the Technas
+# Nexus PyPI hosted index. Triggered by tagging a release in the calling repo.
+#
+# Usage in a Python package repo (e.g. technas-i18n-python):
+#
+#   on:
+#     push:
+#       tags: ['v*']
+#   jobs:
+#     release:
+#       uses: Technas-Organization/technas-workflows/.github/workflows/release-python-package.yml@main
+#       with:
+#         package-path: '.'
+#       secrets: inherit
+#
+# The tag MUST match the [project].version in pyproject.toml. The workflow
+# fails fast if they don't match — that's intentional, to avoid Nexus ending
+# up with mismatched tag/wheel pairs.
+
+on:
+  workflow_call:
+    inputs:
+      package-path:
+        description: "Path to the directory containing pyproject.toml (default: repo root)"
+        type: string
+        default: '.'
+      python-version:
+        type: string
+        default: '3.11'
+      nexus-repo:
+        description: "Nexus repository name for the upload URL"
+        type: string
+        default: 'technas-pypi-hosted'
+    secrets:
+      NEXUS_USER:
+        required: true
+      NEXUS_PASSWORD:
+        required: true
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - name: Install build tooling
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install build twine
+
+      - name: Check tag matches pyproject version
+        working-directory: ${{ inputs.package-path }}
+        run: |
+          set -e
+          tag="${GITHUB_REF##*/}"
+          tag_version="${tag#v}"
+          pyproject_version=$(python -c "
+          import sys
+          if sys.version_info >= (3, 11):
+              import tomllib
+          else:
+              import tomli as tomllib
+          with open('pyproject.toml', 'rb') as fh:
+              print(tomllib.load(fh)['project']['version'])
+          ")
+          echo "Tag:        $tag (parsed version: $tag_version)"
+          echo "pyproject:  $pyproject_version"
+          if [ "$tag_version" != "$pyproject_version" ]; then
+            echo "::error::Tag $tag does not match pyproject version $pyproject_version. Bump pyproject.toml and re-tag."
+            exit 1
+          fi
+
+      - name: Build wheel + sdist
+        working-directory: ${{ inputs.package-path }}
+        run: |
+          rm -rf dist
+          python -m build
+
+      - name: Publish to Nexus
+        working-directory: ${{ inputs.package-path }}
+        env:
+          TWINE_USERNAME: ${{ secrets.NEXUS_USER }}
+          TWINE_PASSWORD: ${{ secrets.NEXUS_PASSWORD }}
+          TWINE_REPOSITORY_URL: https://nexus.technas.fr/repository/${{ inputs.nexus-repo }}/
+        run: |
+          twine upload --non-interactive --disable-progress-bar dist/*
