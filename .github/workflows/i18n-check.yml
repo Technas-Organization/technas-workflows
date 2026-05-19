@@ -1,0 +1,75 @@
+name: i18n-check (reusable)
+
+# Reusable workflow: validates fr.json files (parse + duplicate keys) and warns
+# about missing keys in en/pt/es. Called by per-product workflows.
+#
+# Usage in a product repo:
+#
+#   on:
+#     push:
+#       paths: ['**/translations/**.json']
+#   jobs:
+#     check:
+#       uses: Technas-Organization/technas-workflows/.github/workflows/i18n-check.yml@main
+#       with:
+#         strict: false  # set true to fail CI on parity divergence
+#       secrets: inherit
+
+on:
+  workflow_call:
+    inputs:
+      strict:
+        description: "Fail the job if any en/pt/es key is missing (default: warn-only)"
+        type: boolean
+        default: false
+      python-version:
+        type: string
+        default: '3.11'
+      technas-i18n-version:
+        description: "Version of technas-i18n to install (default: latest)"
+        type: string
+        default: ''
+    secrets:
+      NEXUS_USER:
+        required: true
+      NEXUS_PASSWORD:
+        required: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - name: Configure Nexus PyPI
+        env:
+          NX_U: ${{ secrets.NEXUS_USER }}
+          NX_P: ${{ secrets.NEXUS_PASSWORD }}
+        run: |
+          mkdir -p "$HOME/.config/pip"
+          printf "machine nexus.technas.fr\nlogin %s\npassword %s\n" "$NX_U" "$NX_P" > "$HOME/.netrc"
+          printf "[global]\nextra-index-url = https://%s:%s@nexus.technas.fr/repository/technas-pypi-hosted/simple/\n" "$NX_U" "$NX_P" > "$HOME/.config/pip/pip.conf"
+
+      - name: Install technas-i18n CLI
+        run: |
+          pip install --upgrade pip
+          if [ -n "${{ inputs.technas-i18n-version }}" ]; then
+            pip install "technas-i18n==${{ inputs.technas-i18n-version }}"
+          else
+            pip install "technas-i18n"
+          fi
+
+      - name: Run parity check
+        run: |
+          if [ "${{ inputs.strict }}" = "true" ]; then
+            technas-i18n check --root . --strict
+          else
+            technas-i18n check --root .
+          fi

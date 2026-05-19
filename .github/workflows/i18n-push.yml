@@ -1,0 +1,130 @@
+name: i18n-push (reusable)
+
+# Reusable workflow: pushes changed fr.json files to their POEditor projects.
+# The mapping path-prefix → POEditor project id is passed via `scopes` input.
+#
+# Usage in a product repo (e.g. BeautyGo):
+#
+#   on:
+#     push:
+#       branches: [main]
+#       paths: ['**/translations/fr.json']
+#   jobs:
+#     push:
+#       uses: Technas-Organization/technas-workflows/.github/workflows/i18n-push.yml@main
+#       with:
+#         scopes: |
+#           packages/technas_i18n/:${{ vars.POEDITOR_PROJECT_ID_CORE }}
+#           BeautyGoApp/:${{ vars.POEDITOR_PROJECT_ID_CLIENT }}
+#           beauty_go_stylist/:${{ vars.POEDITOR_PROJECT_ID_STYLIST }}
+#           packages/:${{ vars.POEDITOR_PROJECT_ID_PACKAGES }}  # fallback for any other shared package
+#       secrets: inherit
+
+on:
+  workflow_call:
+    inputs:
+      scopes:
+        description: |
+          Multiline mapping of path-prefix to POEditor project id.
+          One per line, format: '<prefix>:<project_id>'.
+          The first matching prefix (in order) wins for a given file.
+        type: string
+        required: true
+      python-version:
+        type: string
+        default: '3.11'
+      technas-i18n-version:
+        type: string
+        default: ''
+      bot-actor:
+        description: "GitHub username of the i18n bot — skip workflow when this user is the commit author (anti-loop)"
+        type: string
+        default: 'beautygo-poeditor-bot'
+    secrets:
+      POEDITOR_API_TOKEN:
+        required: true
+      NEXUS_USER:
+        required: true
+      NEXUS_PASSWORD:
+        required: true
+
+jobs:
+  push:
+    runs-on: ubuntu-latest
+    if: github.actor != inputs.bot-actor
+    env:
+      POEDITOR_API_TOKEN: ${{ secrets.POEDITOR_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 2
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - name: Configure Nexus PyPI
+        env:
+          NX_U: ${{ secrets.NEXUS_USER }}
+          NX_P: ${{ secrets.NEXUS_PASSWORD }}
+        run: |
+          mkdir -p "$HOME/.config/pip"
+          printf "machine nexus.technas.fr\nlogin %s\npassword %s\n" "$NX_U" "$NX_P" > "$HOME/.netrc"
+          printf "[global]\nextra-index-url = https://%s:%s@nexus.technas.fr/repository/technas-pypi-hosted/simple/\n" "$NX_U" "$NX_P" > "$HOME/.config/pip/pip.conf"
+
+      - name: Install technas-i18n CLI
+        run: |
+          pip install --upgrade pip
+          if [ -n "${{ inputs.technas-i18n-version }}" ]; then
+            pip install "technas-i18n[cli]==${{ inputs.technas-i18n-version }}"
+          else
+            pip install "technas-i18n[cli]"
+          fi
+
+      - name: Detect changed fr.json files
+        id: changed
+        run: |
+          set -e
+          changed=$(git diff --name-only HEAD~1 HEAD -- '**/translations/fr.json' || true)
+          echo "files<<EOF" >> $GITHUB_OUTPUT
+          echo "$changed" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Push each changed fr.json to its POEditor project
+        if: steps.changed.outputs.files != ''
+        env:
+          SCOPES: ${{ inputs.scopes }}
+        run: |
+          set -e
+          # Parse SCOPES into two parallel arrays (prefixes, ids) preserving order.
+          prefixes=()
+          ids=()
+          while IFS= read -r line; do
+            line="${line%%#*}"  # strip comments
+            line="$(echo -n "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+            [ -z "$line" ] && continue
+            prefix="${line%%:*}"
+            id="${line##*:}"
+            prefixes+=("$prefix")
+            ids+=("$id")
+          done <<< "$SCOPES"
+
+          while IFS= read -r file; do
+            [ -z "$file" ] && continue
+            project=""
+            for i in "${!prefixes[@]}"; do
+              case "$file" in
+                "${prefixes[$i]}"*)
+                  project="${ids[$i]}"
+                  break
+                  ;;
+              esac
+            done
+            if [ -z "$project" ]; then
+              echo "::warning::No POEditor project mapped for $file — skipping"
+              continue
+            fi
+            echo "Pushing $file → project $project"
+            technas-i18n push --project "$project" --file "$file"
+          done <<< "${{ steps.changed.outputs.files }}"

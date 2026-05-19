@@ -1,0 +1,171 @@
+name: i18n-pull (reusable)
+
+# Reusable workflow: pulls validated en/pt/es translations from POEditor and
+# commits them directly to main (parent repo + submodules) as the i18n bot.
+#
+# Usage in a product repo:
+#
+#   on:
+#     schedule: [{ cron: '0 4 * * *' }]
+#     workflow_dispatch:
+#   jobs:
+#     pull:
+#       uses: Technas-Organization/technas-workflows/.github/workflows/i18n-pull.yml@main
+#       with:
+#         scopes: |
+#           packages/technas_i18n/assets/translations:${{ vars.POEDITOR_PROJECT_ID_CORE }}
+#           BeautyGoApp/assets/translations:${{ vars.POEDITOR_PROJECT_ID_CLIENT }}
+#           beauty_go_stylist/assets/translations:${{ vars.POEDITOR_PROJECT_ID_STYLIST }}
+#         package-scopes: |
+#           packages/technas_chat:${{ vars.POEDITOR_PROJECT_ID_PACKAGES }}
+#           packages/technas_alerts:${{ vars.POEDITOR_PROJECT_ID_PACKAGES }}
+#         bot-actor: beautygo-poeditor-bot
+#         bot-email: poeditor-bot@beautygo.local
+#       secrets: inherit
+
+on:
+  workflow_call:
+    inputs:
+      scopes:
+        description: "Multiline 'translations-dir:project_id' (one per app/package scope)"
+        type: string
+        required: true
+      package-scopes:
+        description: "Multiline 'package-root:project_id' — translations live in <package-root>/assets/translations/"
+        type: string
+        default: ''
+      locales:
+        description: "Comma-separated list of locales to pull"
+        type: string
+        default: 'en,pt,es'
+      include-fuzzy:
+        description: "Pull fuzzy translations as well (default: only validated)"
+        type: boolean
+        default: false
+      bot-actor:
+        description: "GitHub username of the i18n bot used as commit author"
+        type: string
+        default: 'beautygo-poeditor-bot'
+      bot-email:
+        type: string
+        default: 'poeditor-bot@beautygo.local'
+      python-version:
+        type: string
+        default: '3.11'
+      technas-i18n-version:
+        type: string
+        default: ''
+    secrets:
+      POEDITOR_API_TOKEN:
+        required: true
+      POEDITOR_BOT_TOKEN:
+        description: "PAT with write access to parent repo + each submodule"
+        required: true
+      NEXUS_USER:
+        required: true
+      NEXUS_PASSWORD:
+        required: true
+
+jobs:
+  pull:
+    runs-on: ubuntu-latest
+    env:
+      POEDITOR_API_TOKEN: ${{ secrets.POEDITOR_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ secrets.POEDITOR_BOT_TOKEN }}
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - name: Configure git identity
+        run: |
+          git config --global user.email "${{ inputs.bot-email }}"
+          git config --global user.name "${{ inputs.bot-actor }}"
+
+      - name: Configure Nexus PyPI
+        env:
+          NX_U: ${{ secrets.NEXUS_USER }}
+          NX_P: ${{ secrets.NEXUS_PASSWORD }}
+        run: |
+          mkdir -p "$HOME/.config/pip"
+          printf "machine nexus.technas.fr\nlogin %s\npassword %s\n" "$NX_U" "$NX_P" > "$HOME/.netrc"
+          printf "[global]\nextra-index-url = https://%s:%s@nexus.technas.fr/repository/technas-pypi-hosted/simple/\n" "$NX_U" "$NX_P" > "$HOME/.config/pip/pip.conf"
+
+      - name: Install technas-i18n CLI
+        run: |
+          pip install --upgrade pip
+          if [ -n "${{ inputs.technas-i18n-version }}" ]; then
+            pip install "technas-i18n[cli]==${{ inputs.technas-i18n-version }}"
+          else
+            pip install "technas-i18n[cli]"
+          fi
+
+      - name: Pull translations for each scope
+        env:
+          SCOPES: ${{ inputs.scopes }}
+          PKG_SCOPES: ${{ inputs.package-scopes }}
+          LOCALES: ${{ inputs.locales }}
+          INCLUDE_FUZZY: ${{ inputs.include-fuzzy }}
+        run: |
+          set -e
+          fuzzy_flag=""
+          if [ "$INCLUDE_FUZZY" = "true" ]; then
+            fuzzy_flag="--include-fuzzy"
+          fi
+
+          parse_and_pull() {
+            local raw="$1"
+            local default_subpath="$2"  # '' for scopes (already full path), 'assets/translations' for package-scopes
+            while IFS= read -r line; do
+              line="${line%%#*}"
+              line="$(echo -n "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+              [ -z "$line" ] && continue
+              local prefix="${line%%:*}"
+              local project="${line##*:}"
+              local dir="$prefix"
+              if [ -n "$default_subpath" ]; then
+                dir="$prefix/$default_subpath"
+              fi
+              [ -d "$dir" ] || { echo "::warning::dir not found: $dir"; continue; }
+              for lang in $(echo "$LOCALES" | tr ',' ' '); do
+                echo "Pull $dir/$lang.json from project $project"
+                technas-i18n pull --project "$project" --lang "$lang" --dest "$dir/$lang.json" $fuzzy_flag || true
+              done
+            done <<< "$raw"
+          }
+
+          parse_and_pull "$SCOPES" ""
+          if [ -n "$PKG_SCOPES" ]; then
+            parse_and_pull "$PKG_SCOPES" "assets/translations"
+          fi
+
+      - name: Parity check (warn-only)
+        continue-on-error: true
+        run: technas-i18n check --root .
+
+      - name: Commit and push inside submodules
+        run: |
+          set -e
+          git submodule foreach --recursive '
+            if [ -n "$(git status --porcelain assets/translations/ translations/ 2>/dev/null)" ]; then
+              git add assets/translations/ translations/ 2>/dev/null || true
+              git commit -m "chore(i18n): sync translations from POEditor" || true
+              git push origin HEAD:main || true
+            fi
+          '
+
+      - name: Commit pointer + push parent
+        run: |
+          set -e
+          git add -A
+          if ! git diff --cached --quiet; then
+            git commit -m "chore(i18n): sync translations from POEditor"
+            git push origin HEAD:main
+          else
+            echo "No changes to commit."
+          fi
