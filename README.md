@@ -1,8 +1,157 @@
 # technas-workflows
 
-Reusable GitHub Actions workflows shared across all Technas products (BeautyGo, Rede, FarmCover, FleetPro, WashPro, OilDispatching, GMFitness, …).
+Reusable GitHub Actions workflows shared across all Technas products (BeautyGo, Éclat d'Or, Rede, FarmCover, FleetPro, WashPro, OilDispatching, GMFitness, …).
 
-This repo holds **workflow definitions only**. Each product repo references them from its own `.github/workflows/` via `uses:`.
+This repo holds the **shared CI definitions and their build assets**. Each product repo references the workflows from its own `.github/workflows/` via `uses:` and stays a thin caller.
+
+## Repository layout
+
+```
+.github/workflows/    reusable workflows (on: workflow_call)
+  i18n-{check,pull,push}.yml      — translation sync (POEditor ↔ repo)
+  deploy-flutter-web.yml          — Flutter web → BuildKit image → k8s rollout
+  flutter-apk-smoke.yml           — debug APK build (per-push smoke test)
+  deploy-flutter-android.yml      — signed AAB → Google Play
+  deploy-flutter-ios.yml          — iOS → TestFlight (Match)
+docker/mobile/Dockerfile          — single-source Flutter+JDK+AndroidSDK+Ruby builder image
+fastlane/                         — single-source Fastlane helpers
+  TechnasAndroidHelper.rb         — Play Store auth + upload + APK distribute
+  TechnasIosHelper.rb             — Match signing + build + TestFlight upload
+scripts/check_aab_16kb_alignment.sh — Play Store 16 KB ELF-alignment guard
+```
+
+### How the Flutter app workflows reuse these assets
+
+The native/web workflows do **not** require apps to vendor a `Dockerfile`, the
+Fastlane helpers, or the alignment script. Each reusable job checks out **two**
+repos onto the runner:
+
+1. the **caller** app at the workspace root (so `app_dir` like `flutter_app/` resolves), and
+2. **technas-workflows** under `.technas-workflows/` for the shared Dockerfile / helpers / scripts.
+
+The Android + iOS jobs export the shared Fastlane dir to the per-app `Fastfile`
+via the **`TECHNAS_FASTLANE_HELPERS`** env var. A per-app `Fastfile` therefore
+loads the helper with:
+
+```ruby
+helper = ENV['TECHNAS_FASTLANE_HELPERS'] ||
+         File.expand_path('../../../.github-org/fastlane', __dir__) # legacy fallback
+require File.join(helper, 'TechnasAndroidHelper')   # or TechnasIosHelper
+```
+
+The app keeps only the bits that are genuinely app-specific:
+
+- Android: `android/fastlane/{Appfile,Fastfile}`, `android/Gemfile`, and the
+  `android/app/build.gradle.kts` signing config that loads `key.properties`
+  (the workflow writes `key.properties` + the keystore from secrets at runtime).
+- iOS: `ios/fastlane/{Appfile,Fastfile,Matchfile}`, `ios/Gemfile`, and
+  `get_flutter_version.sh` at the app root.
+
+## Flutter app workflows
+
+### `deploy-flutter-web.yml`
+
+Builds `flutter build web --release --pwa-strategy none` on `build_runner`, wraps
+`build/web` in `<app_dir>/<dockerfile>`, pushes to `docker.technas.fr`
+(provenance/sbom **off** — Nexus mirror corrupts attestation blobs), then rolls
+out the k8s Deployment on `rollout_runner`.
+
+```yaml
+# <app>/.github/workflows/deploy-app-web.yml
+name: Deploy App Web
+on:
+  push: { branches: [main], paths: ['flutter_app/**','packages/**','k8s-deployments/<app>-web/**','.github/workflows/deploy-app-web.yml'] }
+  workflow_dispatch: {}
+permissions: { contents: read, packages: write }
+jobs:
+  web:
+    uses: Technas-Organization/technas-workflows/.github/workflows/deploy-flutter-web.yml@main
+    with:
+      app_dir: flutter_app
+      image_name: docker.technas.fr/technas/<app>-web
+      k8s_namespace: technas-choir
+      k8s_deployment: <app>-web
+      dart_defines: "TENANT=<tenant>,API_BASE_URL=https://api-<app>.technas.fr"
+      # build_runner/rollout_runner default to "technas-backend-build" / "technas-web-build".
+      manifest_paths: k8s-deployments/<app>-web/<app>-web.yaml
+      pre_build_script: "dart run tool/generate_version.dart || true"
+    secrets: inherit
+```
+
+Inputs: `app_dir`, `image_name`, `k8s_namespace`, `k8s_deployment`, `dart_defines`,
+`build_runner`, `rollout_runner` (all per the task) + `dockerfile`, `manifest_paths`,
+`registry`, `flutter_version`, `flutter_channel`, `pre_build_script`, `env_copy_from`,
+`submodules`, `rollout_timeout`.
+Secrets (caller passes via `secrets: inherit`): `TECHNAS_REGISTRY_USER`/`TECHNAS_REGISTRY_PASSWORD`
+**or** `DOCKER_REGISTRY_USER`/`DOCKER_REGISTRY_PASSWORD`, optional `PACKAGES_PAT`.
+
+> `build_runner`/`rollout_runner`/`android_runner`/`macos_runner` are passed to
+> `fromJSON`, so the value must be **valid JSON**: a quoted single label
+> (`'"technas-backend-build"'`) **or** a JSON array
+> (`'["self-hosted","Linux","X64","technas-android-build"]'`). The defaults already
+> cover the standard runners, so most callers never set these.
+
+### `flutter-apk-smoke.yml`
+
+Builds a **debug** APK inside the shared mobile image on the Android runner — a
+cheap per-push guard that an Android build still compiles.
+
+```yaml
+jobs:
+  smoke:
+    uses: Technas-Organization/technas-workflows/.github/workflows/flutter-apk-smoke.yml@main
+    with:
+      app_dir: flutter_app
+      app_id: fr.technas.<app>
+      dart_defines: "TENANT=<tenant>"
+    secrets: inherit
+```
+
+Inputs: `app_dir`, `app_id`, `dart_defines` (+ `android_runner`, `submodules`, `workflows_ref`).
+Secrets: optional `PACKAGES_PAT`.
+
+### `deploy-flutter-android.yml`
+
+Signs + builds the AAB inside the shared mobile image, runs the 16 KB alignment
+guard, then uploads to Google Play via the shared Fastlane helper.
+
+```yaml
+jobs:
+  android:
+    uses: Technas-Organization/technas-workflows/.github/workflows/deploy-flutter-android.yml@main
+    with:
+      app_dir: flutter_app
+      app_id: fr.technas.<app>
+      track: internal
+      dart_defines: "TENANT=<tenant>"
+    secrets: inherit
+```
+
+Inputs: `app_dir`, `app_id`, `track`, `dart_defines` (+ `skip_play_store`,
+`check_16kb_alignment`, `android_runner`, `submodules`, `workflows_ref`).
+Required secrets: `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`,
+`ANDROID_KEY_PASSWORD`, `ANDROID_KEY_ALIAS`, `PLAY_STORE_JSON_KEY` (+ optional `PACKAGES_PAT`).
+
+### `deploy-flutter-ios.yml`
+
+Builds + uploads to TestFlight via Fastlane Match on the macOS runner.
+
+```yaml
+jobs:
+  ios:
+    uses: Technas-Organization/technas-workflows/.github/workflows/deploy-flutter-ios.yml@main
+    with:
+      app_dir: flutter_app
+      app_id: fr.technas.<app>
+    secrets: inherit
+```
+
+Inputs: `app_dir`, `app_id`, `track` (unused — TestFlight only), `fastlane_lane`,
+`match_force_refresh` (+ `macos_runner`, `submodules`, `workflows_ref`).
+Required secrets: `AUTH_KEY_CONTENT`, `APP_STORE_CONNECT_API_KEY_CONTENT_BASE64`,
+`APP_STORE_API_KEY_ID`, `APP_STORE_ISSUER_ID`, `APP_STORE_TEAM_ID`, `MATCH_PASSWORD`;
+optional `MATCH_GIT_URL[_GITHUB]`, `MATCH_GIT_BASIC_AUTHORIZATION[_GITHUB]`,
+`APP_STORE_CONTACT_*`, `APP_STORE_REVIEW_NOTES`, `PACKAGES_PAT`.
 
 ## i18n workflows
 

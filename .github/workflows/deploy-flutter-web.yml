@@ -1,0 +1,271 @@
+name: deploy-flutter-web (reusable)
+
+# Reusable workflow: build a Flutter **web** app and ship it as a container.
+#
+# What it does (mirrors BeautyGo deploy-app-web.yml, generalized):
+#   1. Checks out the CALLER repo (the app) at the workspace root.
+#   2. Runs `flutter build web --release --pwa-strategy none` (+ caller dart-defines)
+#      on the build runner. `--pwa-strategy none` keeps flutter_bootstrap.js from
+#      registering a service worker (which needs a secure context — noisy on LAN HTTP).
+#   3. Builds <app_dir>/<dockerfile> with BuildKit and pushes to docker.technas.fr
+#      with provenance:false + sbom:false (Nexus mirror + containerd resolve OCI
+#      attestation blobs as 404 on pull-by-digest — BeautyGo lesson).
+#   4. Rolls out the k8s Deployment on the rollout runner (in-cluster SA token).
+#
+# Usage (caller, e.g. eclat-d-or):
+#
+#   jobs:
+#     web:
+#       uses: Technas-Organization/technas-workflows/.github/workflows/deploy-flutter-web.yml@main
+#       with:
+#         app_dir: flutter_app
+#         image_name: docker.technas.fr/technas/eclatdor-web
+#         k8s_namespace: technas-choir
+#         k8s_deployment: eclatdor-web
+#         dart_defines: "TENANT=eclatdor,API_BASE_URL=https://api-eclatdor.technas.fr"
+#         build_runner: technas-backend-build
+#         rollout_runner: technas-web-build
+#         manifest_paths: k8s-deployments/eclatdor-web/eclatdor-web.yaml
+#       secrets: inherit
+
+on:
+  workflow_call:
+    inputs:
+      app_dir:
+        description: "Path to the Flutter app (the dir holding pubspec.yaml)."
+        type: string
+        required: true
+      image_name:
+        description: "Full image name WITHOUT tag, e.g. docker.technas.fr/technas/eclatdor-web."
+        type: string
+        required: true
+      k8s_namespace:
+        description: "Kubernetes namespace to roll out into."
+        type: string
+        required: true
+      k8s_deployment:
+        description: "Deployment name (also the container name, by convention)."
+        type: string
+        required: true
+      dart_defines:
+        description: "Comma-separated KEY=VALUE pairs passed as --dart-define (e.g. TENANT=eclatdor,API_BASE_URL=https://...)."
+        type: string
+        default: ''
+      build_runner:
+        description: |
+          Runner for the build job, as a JSON value passed to fromJSON. NEVER ubuntu-latest.
+          Single label: '"technas-backend-build"'. Multi-label: '["self-hosted","Linux","X64","..."]'.
+        type: string
+        default: '"technas-backend-build"'
+      rollout_runner:
+        description: "Runner for the rollout job (in-cluster SA token), as a JSON value (see build_runner)."
+        type: string
+        default: '"technas-web-build"'
+      dockerfile:
+        description: "Dockerfile path RELATIVE to app_dir (build context = app_dir)."
+        type: string
+        default: Dockerfile.web
+      manifest_paths:
+        description: |
+          Whitespace/newline-separated list of k8s manifest files to `kubectl apply`.
+          Each file gets `:IMAGE_TAG` substituted with the computed image tag before apply.
+        type: string
+        required: true
+      registry:
+        description: "Container registry host."
+        type: string
+        default: docker.technas.fr
+      flutter_version:
+        description: "Flutter SDK version (empty = latest stable from subosito/flutter-action)."
+        type: string
+        default: ''
+      flutter_channel:
+        type: string
+        default: stable
+      pre_build_script:
+        description: |
+          Optional shell run (in app_dir) AFTER `flutter pub get` and BEFORE `flutter build web`.
+          Use for e.g. `dart run tool/generate_version.dart`. Runs via `bash -e`.
+        type: string
+        default: ''
+      env_copy_from:
+        description: "Optional file (relative to app_dir) to copy to <app_dir>/.env before build (e.g. config/env.public)."
+        type: string
+        default: ''
+      submodules:
+        description: "actions/checkout submodules value (false / true / recursive)."
+        type: string
+        default: 'false'
+      rollout_timeout:
+        type: string
+        default: '300s'
+    secrets:
+      # Registry push credentials. BeautyGo uses DOCKER_REGISTRY_*, the choir
+      # stack uses TECHNAS_REGISTRY_* — the workflow accepts either, caller
+      # passes whichever it has via `secrets: inherit`.
+      DOCKER_REGISTRY_USER:
+        required: false
+      DOCKER_REGISTRY_PASSWORD:
+        required: false
+      TECHNAS_REGISTRY_USER:
+        required: false
+      TECHNAS_REGISTRY_PASSWORD:
+        required: false
+      # Optional PAT for cloning private submodules / git pubspec deps.
+      PACKAGES_PAT:
+        required: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    name: Build & push image
+    runs-on: ${{ fromJSON(inputs.build_runner) }}
+    outputs:
+      image_tag: ${{ steps.tag.outputs.image_tag }}
+    steps:
+      - name: Checkout app
+        uses: actions/checkout@v4
+        with:
+          submodules: ${{ inputs.submodules }}
+          token: ${{ secrets.PACKAGES_PAT || github.token }}
+
+      - name: Install Flutter prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xz-utils
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ inputs.flutter_version }}
+          channel: ${{ inputs.flutter_channel }}
+          cache: true
+
+      - name: Copy environment file
+        if: inputs.env_copy_from != ''
+        working-directory: ${{ inputs.app_dir }}
+        run: cp "${{ inputs.env_copy_from }}" .env
+
+      - name: Flutter clean
+        working-directory: ${{ inputs.app_dir }}
+        # Evicting .dart_tool/ is critical: stale incremental asset indices for
+        # unchanged path/git deps can silently drop translation files between
+        # builds (BeautyGo incident).
+        run: flutter clean && rm -rf .dart_tool
+
+      - name: Flutter pub get
+        working-directory: ${{ inputs.app_dir }}
+        run: flutter pub get
+
+      - name: Pre-build script
+        if: inputs.pre_build_script != ''
+        working-directory: ${{ inputs.app_dir }}
+        run: |
+          set -e
+          ${{ inputs.pre_build_script }}
+
+      - name: Build web
+        working-directory: ${{ inputs.app_dir }}
+        env:
+          DART_DEFINES: ${{ inputs.dart_defines }}
+        run: |
+          set -e
+          define_args=()
+          if [ -n "$DART_DEFINES" ]; then
+            IFS=',' read -ra pairs <<< "$DART_DEFINES"
+            for p in "${pairs[@]}"; do
+              p="$(echo -n "$p" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+              [ -z "$p" ] && continue
+              define_args+=(--dart-define="$p")
+            done
+          fi
+          flutter build web --release --pwa-strategy none "${define_args[@]}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ inputs.registry }}
+          username: ${{ secrets.TECHNAS_REGISTRY_USER || secrets.DOCKER_REGISTRY_USER }}
+          password: ${{ secrets.TECHNAS_REGISTRY_PASSWORD || secrets.DOCKER_REGISTRY_PASSWORD }}
+
+      - name: Compute tag
+        id: tag
+        run: echo "image_tag=${GITHUB_SHA::12}-${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+
+      - name: Build & push (linux/amd64)
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ inputs.app_dir }}
+          file: ${{ inputs.app_dir }}/${{ inputs.dockerfile }}
+          platforms: linux/amd64
+          push: true
+          # Nexus mirror + containerd resolve OCI provenance/sbom blobs as 404
+          # on pull-by-digest → ImagePullBackOff. Always off for our registry.
+          provenance: false
+          sbom: false
+          tags: |
+            ${{ inputs.image_name }}:latest
+            ${{ inputs.image_name }}:${{ steps.tag.outputs.image_tag }}
+          cache-from: type=gha,scope=${{ inputs.k8s_deployment }}
+          cache-to: type=gha,mode=max,scope=${{ inputs.k8s_deployment }}
+
+  rollout:
+    name: Rollout to Kubernetes
+    needs: build
+    runs-on: ${{ fromJSON(inputs.rollout_runner) }}
+    if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+    env:
+      IMAGE: ${{ inputs.image_name }}
+      IMAGE_TAG: ${{ needs.build.outputs.image_tag }}
+      NAMESPACE: ${{ inputs.k8s_namespace }}
+      DEPLOYMENT: ${{ inputs.k8s_deployment }}
+    steps:
+      - name: Checkout (manifests only)
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Install kubectl
+        run: |
+          curl -sLO "https://dl.k8s.io/release/v1.34.6/bin/linux/amd64/kubectl"
+          chmod +x kubectl
+          sudo mv kubectl /usr/local/bin/kubectl
+          kubectl version --client=true
+
+      - name: Apply manifests
+        env:
+          MANIFESTS: ${{ inputs.manifest_paths }}
+        run: |
+          set -e
+          # NetworkPolicy must be part of these manifests — kube-router silently
+          # drops pods without a matching netpol since 2026-05-24.
+          for m in $MANIFESTS; do
+            [ -z "$m" ] && continue
+            echo "Applying $m"
+            sed "s|:IMAGE_TAG|:${IMAGE_TAG}|g" "$m" | kubectl apply -n "$NAMESPACE" -f -
+          done
+
+      - name: Force pull of new image
+        run: |
+          kubectl -n "$NAMESPACE" set image deployment/"$DEPLOYMENT" \
+            "$DEPLOYMENT"="$IMAGE:$IMAGE_TAG"
+          kubectl -n "$NAMESPACE" rollout restart deployment/"$DEPLOYMENT"
+
+      - name: Wait for rollout
+        run: |
+          kubectl -n "$NAMESPACE" rollout status deployment/"$DEPLOYMENT" --timeout=${{ inputs.rollout_timeout }}
+          kubectl -n "$NAMESPACE" get pods -l app="$DEPLOYMENT"
+
+      - name: Summary
+        run: |
+          echo "### Deploy flutter-web summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Key | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-----|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Namespace | $NAMESPACE |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Image | \`$IMAGE:$IMAGE_TAG\` |" >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,136 @@
+name: flutter-apk-smoke (reusable)
+
+# Reusable workflow: build a DEBUG apk so a broken Android build is caught on
+# every push, WITHOUT signing or store upload.
+#
+# Runs on the dedicated self-hosted Android runner (technas-android-build) — the
+# backend ARC scale-set has no Android SDK. The Flutter+JDK+Android-SDK image is
+# built from THIS repo's docker/mobile/Dockerfile (single source), so there is no
+# per-runner provisioning drift and apps don't vendor a Dockerfile.
+#
+# It checks out two repos onto the runner:
+#   - the CALLER app at the workspace root (so <app_dir>/ resolves)
+#   - technas-workflows under .technas-workflows/ (for docker/mobile/Dockerfile)
+#
+# Usage (caller):
+#
+#   jobs:
+#     smoke:
+#       uses: Technas-Organization/technas-workflows/.github/workflows/flutter-apk-smoke.yml@main
+#       with:
+#         app_dir: flutter_app
+#         app_id: fr.technas.eclatdor
+#         dart_defines: "TENANT=eclatdor,API_BASE_URL=https://api-eclatdor.technas.fr"
+#       secrets: inherit
+
+on:
+  workflow_call:
+    inputs:
+      app_dir:
+        description: "Path to the Flutter app (the dir holding pubspec.yaml)."
+        type: string
+        required: true
+      app_id:
+        description: "Application id (informational; e.g. fr.technas.eclatdor). Used in the image tag + summary."
+        type: string
+        required: true
+      dart_defines:
+        description: "Comma-separated KEY=VALUE pairs passed as --dart-define."
+        type: string
+        default: ''
+      android_runner:
+        description: "Runner label array for the Android self-hosted runner. NEVER ubuntu-latest."
+        type: string
+        default: '["self-hosted", "Linux", "X64", "technas-android-build"]'
+      submodules:
+        type: string
+        default: 'false'
+      workflows_ref:
+        description: "Ref of technas-workflows to check out for the shared Dockerfile (default: main)."
+        type: string
+        default: main
+    secrets:
+      PACKAGES_PAT:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  apk-debug:
+    runs-on: ${{ fromJSON(inputs.android_runner) }}
+    env:
+      MOBILE_BUILDER_IMAGE: technas-mobile-builder:ci
+    steps:
+      # Previous Docker runs may leave root-owned files → checkout cannot git
+      # clean. Fix ownership via Docker root, then delete without sudo.
+      - name: Reset workspace directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          WS="${{ github.workspace }}"
+          mkdir -p "$WS"
+          docker run --rm -v "$WS:/ws" alpine:3.20 sh -c "chown -R $(id -u):$(id -g) /ws"
+          shopt -s dotglob nullglob
+          rm -rf "${WS:?}"/*
+
+      - name: Checkout app
+        uses: actions/checkout@v4
+        with:
+          submodules: ${{ inputs.submodules }}
+          token: ${{ secrets.PACKAGES_PAT || github.token }}
+
+      - name: Checkout technas-workflows (shared Dockerfile)
+        uses: actions/checkout@v4
+        with:
+          repository: Technas-Organization/technas-workflows
+          ref: ${{ inputs.workflows_ref }}
+          path: .technas-workflows
+          token: ${{ secrets.PACKAGES_PAT || github.token }}
+
+      - name: Build mobile-builder CI image
+        # The Dockerfile does not COPY from the build context, so any context
+        # works; use the shared checkout dir.
+        run: |
+          docker build -t "$MOBILE_BUILDER_IMAGE" \
+            -f .technas-workflows/docker/mobile/Dockerfile \
+            .technas-workflows
+
+      - name: Get dependencies
+        run: |
+          docker run --rm \
+            -e PUB_CACHE=/workspace/.pub-cache \
+            -v "${{ github.workspace }}:/workspace" \
+            -w "/workspace/${{ inputs.app_dir }}" \
+            "$MOBILE_BUILDER_IMAGE" \
+            flutter pub get
+
+      - name: Build debug APK
+        env:
+          DART_DEFINES: ${{ inputs.dart_defines }}
+        run: |
+          define_args=""
+          if [ -n "$DART_DEFINES" ]; then
+            IFS=',' read -ra pairs <<< "$DART_DEFINES"
+            for p in "${pairs[@]}"; do
+              p="$(echo -n "$p" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+              [ -z "$p" ] && continue
+              define_args="$define_args --dart-define=$p"
+            done
+          fi
+          docker run --rm \
+            -e PUB_CACHE=/workspace/.pub-cache \
+            -v "${{ github.workspace }}:/workspace" \
+            -w "/workspace/${{ inputs.app_dir }}" \
+            "$MOBILE_BUILDER_IMAGE" \
+            bash -lc "flutter build apk --debug $define_args"
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "### APK smoke — ${{ inputs.app_id }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "App dir: \`${{ inputs.app_dir }}\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Repair workspace ownership after Docker
+        if: always()
+        run: docker run --rm -v "${{ github.workspace }}:/ws" alpine:3.20 sh -c "chown -R $(id -u):$(id -g) /ws"

@@ -1,0 +1,278 @@
+name: deploy-flutter-ios (reusable)
+
+# Reusable workflow: build a Flutter iOS app and upload it to TestFlight via
+# Fastlane Match. Generalized from BeautyGo deploy-ios.yml (single-app shape).
+#
+# Runs on the self-hosted macOS runner (no Docker). Two repos are checked out:
+#   - the CALLER app at the workspace root (so <app_dir>/ resolves)
+#   - technas-workflows under .technas-workflows/ for the SHARED fastlane helper
+#     (fastlane/TechnasIosHelper.rb), exported as TECHNAS_FASTLANE_HELPERS.
+#
+# The app keeps ONLY its per-app ios/fastlane/{Appfile,Fastfile,Matchfile}. Its
+# Fastfile loads the shared helper via the TECHNAS_FASTLANE_HELPERS env var and
+# calls technas_release_ios(app_identifier: <app_id>, app_name: ...).
+#
+# Usage (caller):
+#
+#   jobs:
+#     ios:
+#       uses: Technas-Organization/technas-workflows/.github/workflows/deploy-flutter-ios.yml@main
+#       with:
+#         app_dir: flutter_app
+#         app_id: fr.technas.eclatdor
+#       secrets: inherit
+
+on:
+  workflow_call:
+    inputs:
+      app_dir:
+        description: "Path to the Flutter app (the dir holding pubspec.yaml)."
+        type: string
+        required: true
+      app_id:
+        description: "iOS bundle identifier, e.g. fr.technas.eclatdor (informational; the app's Fastfile/Appfile own the real value)."
+        type: string
+        required: true
+      track:
+        description: "Accepted for interface symmetry with android; iOS always ships to TestFlight (unused)."
+        type: string
+        default: testflight
+      fastlane_lane:
+        description: "Fastlane lane to run (default: release)."
+        type: string
+        default: release
+      match_force_refresh:
+        description: "Force Match to regenerate the provisioning profile (after an entitlement change). Bypasses readonly for one run."
+        type: boolean
+        default: false
+      macos_runner:
+        type: string
+        default: '["self-hosted", "macOS"]'
+      submodules:
+        type: string
+        default: 'false'
+      workflows_ref:
+        description: "Ref of technas-workflows to check out for the shared fastlane helper."
+        type: string
+        default: main
+    secrets:
+      PACKAGES_PAT:
+        required: false
+      AUTH_KEY_CONTENT:
+        required: true
+      APP_STORE_CONNECT_API_KEY_CONTENT_BASE64:
+        required: true
+      APP_STORE_API_KEY_ID:
+        required: true
+      APP_STORE_ISSUER_ID:
+        required: true
+      APP_STORE_TEAM_ID:
+        required: true
+      MATCH_PASSWORD:
+        required: true
+      MATCH_GIT_URL:
+        required: false
+      MATCH_GIT_URL_GITHUB:
+        required: false
+      MATCH_GIT_BASIC_AUTHORIZATION:
+        required: false
+      MATCH_GIT_BASIC_AUTHORIZATION_GITHUB:
+        required: false
+      APP_STORE_CONTACT_EMAIL:
+        required: false
+      APP_STORE_CONTACT_FIRST_NAME:
+        required: false
+      APP_STORE_CONTACT_LAST_NAME:
+        required: false
+      APP_STORE_CONTACT_PHONE:
+        required: false
+      APP_STORE_REVIEW_NOTES:
+        required: false
+
+jobs:
+  build-and-deploy:
+    runs-on: ${{ fromJSON(inputs.macos_runner) }}
+    concurrency:
+      group: ios-build-${{ github.repository }}-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - name: Pre-checkout Cleanup
+        run: sudo rm -rf "${{ github.workspace }}"/* 2>/dev/null || true
+
+      - name: Checkout app
+        uses: actions/checkout@v4
+        with:
+          submodules: ${{ inputs.submodules }}
+          token: ${{ secrets.PACKAGES_PAT || github.token }}
+
+      - name: Checkout technas-workflows (shared fastlane helper)
+        uses: actions/checkout@v4
+        with:
+          repository: Technas-Organization/technas-workflows
+          ref: ${{ inputs.workflows_ref }}
+          path: .technas-workflows
+          token: ${{ secrets.PACKAGES_PAT || github.token }}
+
+      - name: Set Homebrew Ruby in PATH
+        run: |
+          HOMEBREW_RUBY_BIN="/opt/homebrew/opt/ruby/bin"
+          HOMEBREW_GEM_BIN="$(${HOMEBREW_RUBY_BIN}/ruby -e 'puts Gem.bindir' 2>/dev/null || echo '/opt/homebrew/lib/ruby/gems/3.3.0/bin')"
+          echo "$HOMEBREW_RUBY_BIN" >> $GITHUB_PATH
+          echo "$HOMEBREW_GEM_BIN" >> $GITHUB_PATH
+          echo "/opt/homebrew/bin" >> $GITHUB_PATH
+
+      - name: Xcode first launch setup
+        run: |
+          sudo xcodebuild -runFirstLaunch 2>/dev/null || true
+
+      - name: Setup Ruby (ARM-native for CocoaPods)
+        run: |
+          ruby --version
+          gem --version
+          which ruby
+          gem pristine ffi --version 1.15.5 2>/dev/null || gem install ffi -- --enable-libffi-alloc 2>/dev/null || true
+          CURRENT_POD=$(gem list cocoapods --local 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "none")
+          if [ "$CURRENT_POD" != "1.16.2" ]; then
+            echo "Installing CocoaPods 1.16.2 (current: $CURRENT_POD)"
+            gem install cocoapods -v 1.16.2 --no-document
+          fi
+          pod --version
+          which pod
+
+      - name: Flutter setup
+        run: |
+          source "$HOME/.cargo/env" 2>/dev/null || true
+          flutter --version
+          cd "${{ inputs.app_dir }}"
+          flutter clean
+          flutter pub get
+
+      - name: Reset keychain state
+        run: |
+          security delete-keychain fastlane_tmp_keychain 2>/dev/null || true
+          security delete-keychain fastlane_tmp_keychain-db 2>/dev/null || true
+          security default-keychain -s ~/Library/Keychains/login.keychain-db 2>/dev/null || true
+          security list-keychains -d user -s ~/Library/Keychains/login.keychain-db /Library/Keychains/System.keychain 2>/dev/null || true
+          security unlock-keychain -p "" ~/Library/Keychains/login.keychain-db 2>/dev/null || true
+
+      - name: Decode App Store API Key
+        env:
+          AUTH_KEY_CONTENT: ${{ secrets.AUTH_KEY_CONTENT }}
+        run: |
+          echo "$AUTH_KEY_CONTENT" | base64 -d > auth_key.p8
+          KEY_SIZE=$(wc -c < auth_key.p8)
+          echo "auth_key.p8 size: ${KEY_SIZE} bytes"
+          if [ "$KEY_SIZE" -eq 0 ]; then
+             echo "ERROR: auth_key.p8 is empty!"
+             exit 1
+          fi
+          FIRST_LINE=$(head -1 auth_key.p8)
+          if [[ "$FIRST_LINE" != "-----BEGIN"* ]]; then
+            echo "ERROR: Decoded key does not start with PEM header."
+            exit 1
+          fi
+          tr -d '\r' < auth_key.p8 | tr -d '"' > auth_key_clean.p8
+          echo "APP_STORE_KEY_FILEPATH=$(pwd)/auth_key_clean.p8" >> $GITHUB_ENV
+
+      - name: Setup Ruby and Bundler
+        run: |
+          cd "${{ inputs.app_dir }}/ios"
+          rm -rf vendor/bundle
+          gem install bundler -v '~> 2.4' --no-document
+          OPENSSL_PREFIX="/opt/homebrew/opt/openssl@3"
+          if [ ! -d "$OPENSSL_PREFIX" ]; then OPENSSL_PREFIX="/opt/homebrew/opt/openssl"; fi
+          bundle config set build.openssl "--with-openssl-dir=$OPENSSL_PREFIX"
+          BUNDLE_IGNORE_BUNDLER_VERSION=1 arch -arm64 bundle install
+
+      - name: Convert Key to EC Format
+        working-directory: ${{ inputs.app_dir }}/ios
+        env:
+          APP_STORE_Key_CONTENT_BASE64: ${{ secrets.APP_STORE_CONNECT_API_KEY_CONTENT_BASE64 }}
+        run: |
+          MODERN_RUBY=$(which ruby)
+          EC_PATH="$(dirname $(dirname $PWD))/auth_key_ec.pem"
+          CONVERT_SCRIPT_PATH="$(dirname $(dirname $PWD))/convert_key.rb"
+
+          printf "require 'openssl'\n" > "$CONVERT_SCRIPT_PATH"
+          printf "require 'base64'\n\n" >> "$CONVERT_SCRIPT_PATH"
+          printf "ec_path = '$EC_PATH'\n" >> "$CONVERT_SCRIPT_PATH"
+          printf "raw_base64 = ENV['APP_STORE_Key_CONTENT_BASE64']\n\n" >> "$CONVERT_SCRIPT_PATH"
+          printf "if raw_base64.nil? || raw_base64.empty?\n" >> "$CONVERT_SCRIPT_PATH"
+          printf "  puts 'ERROR: APP_STORE_Key_CONTENT_BASE64 env var is empty!'\n" >> "$CONVERT_SCRIPT_PATH"
+          printf "  exit 1\n" >> "$CONVERT_SCRIPT_PATH"
+          printf "end\n\n" >> "$CONVERT_SCRIPT_PATH"
+          printf "puts 'Decoding base64 secret...'\n" >> "$CONVERT_SCRIPT_PATH"
+          printf "begin\n" >> "$CONVERT_SCRIPT_PATH"
+          printf "  raw_base64 = raw_base64.gsub('\"', '').strip\n" >> "$CONVERT_SCRIPT_PATH"
+          printf "  content = Base64.decode64(raw_base64)\n" >> "$CONVERT_SCRIPT_PATH"
+          printf "  puts 'Decoded content length: ' + content.length.to_s\n" >> "$CONVERT_SCRIPT_PATH"
+          printf "  puts 'Decoded header: ' + content[0..40].inspect\n" >> "$CONVERT_SCRIPT_PATH"
+          printf "  puts 'Parsing key...'\n" >> "$CONVERT_SCRIPT_PATH"
+          printf "  key = OpenSSL::PKey.read(content)\n" >> "$CONVERT_SCRIPT_PATH"
+          printf "  puts 'Key parsed successfully: ' + key.class.name\n" >> "$CONVERT_SCRIPT_PATH"
+          printf "  File.binwrite(ec_path, content)\n" >> "$CONVERT_SCRIPT_PATH"
+          printf "  puts 'Successfully wrote converted key to: ' + ec_path\n" >> "$CONVERT_SCRIPT_PATH"
+          printf "  exit 0\n" >> "$CONVERT_SCRIPT_PATH"
+          printf "rescue => e\n" >> "$CONVERT_SCRIPT_PATH"
+          printf "  puts 'ERROR: Ruby conversion failed!'\n" >> "$CONVERT_SCRIPT_PATH"
+          printf "  puts e.message\n" >> "$CONVERT_SCRIPT_PATH"
+          printf "  puts e.backtrace\n" >> "$CONVERT_SCRIPT_PATH"
+          printf "  exit 1\n" >> "$CONVERT_SCRIPT_PATH"
+          printf "end\n" >> "$CONVERT_SCRIPT_PATH"
+
+          chmod +x "$CONVERT_SCRIPT_PATH"
+          export APP_STORE_Key_CONTENT_BASE64="${{ secrets.APP_STORE_CONNECT_API_KEY_CONTENT_BASE64 }}"
+
+          arch -arm64e /bin/zsh -l -c "
+            export APP_STORE_Key_CONTENT_BASE64='$APP_STORE_Key_CONTENT_BASE64'
+            '$MODERN_RUBY' '$CONVERT_SCRIPT_PATH'
+          "
+
+          if [ -f "$EC_PATH" ]; then
+             echo "APP_STORE_KEY_FILEPATH=${EC_PATH}" >> $GITHUB_ENV
+          else
+             echo "Conversion failed (file not created)."
+             exit 1
+          fi
+
+      - name: Deploy to TestFlight via Fastlane
+        working-directory: ${{ inputs.app_dir }}/ios
+        run: |
+          arch -arm64 bundle exec fastlane ${{ inputs.fastlane_lane }}
+        env:
+          # The per-app Fastfile requires the shared helper via this env var.
+          TECHNAS_FASTLANE_HELPERS: ${{ github.workspace }}/.technas-workflows/fastlane
+          APP_STORE_API_KEY_ID: ${{ secrets.APP_STORE_API_KEY_ID }}
+          APP_STORE_ISSUER_ID: ${{ secrets.APP_STORE_ISSUER_ID }}
+          APP_STORE_KEY_FILEPATH: ${{ env.APP_STORE_KEY_FILEPATH }}
+          MATCH_GIT_URL: ${{ secrets.MATCH_GIT_URL_GITHUB || secrets.MATCH_GIT_URL }}
+          MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
+          MATCH_GIT_BASIC_AUTHORIZATION: ${{ secrets.MATCH_GIT_BASIC_AUTHORIZATION_GITHUB || secrets.MATCH_GIT_BASIC_AUTHORIZATION }}
+          APP_STORE_TEAM_ID: ${{ secrets.APP_STORE_TEAM_ID }}
+          APP_STORE_CONTACT_EMAIL: ${{ secrets.APP_STORE_CONTACT_EMAIL }}
+          APP_STORE_CONTACT_FIRST_NAME: ${{ secrets.APP_STORE_CONTACT_FIRST_NAME }}
+          APP_STORE_CONTACT_LAST_NAME: ${{ secrets.APP_STORE_CONTACT_LAST_NAME }}
+          APP_STORE_CONTACT_PHONE: ${{ secrets.APP_STORE_CONTACT_PHONE }}
+          APP_STORE_REVIEW_NOTES: ${{ secrets.APP_STORE_REVIEW_NOTES }}
+          FASTLANE_XCODEBUILD_SETTINGS_TIMEOUT: "30"
+          FASTLANE_XCODEBUILD_SETTINGS_RETRIES: "3"
+          MATCH_FORCE_REFRESH: ${{ inputs.match_force_refresh }}
+
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -f auth_key.p8
+          rm -f auth_key_ec.pem
+          rm -f convert_key.rb
+          rm -f auth_key_clean.p8
+          rm -f "${{ inputs.app_dir }}/ios"/*.ipa
+          rm -f "${{ inputs.app_dir }}/ios"/*.dSYM.zip
+          security delete-keychain fastlane_tmp_keychain 2>/dev/null || true
+          security delete-keychain fastlane_tmp_keychain-db 2>/dev/null || true
+          security default-keychain -s ~/Library/Keychains/login.keychain-db 2>/dev/null || true
+          security list-keychains -d user -s ~/Library/Keychains/login.keychain-db /Library/Keychains/System.keychain 2>/dev/null || true
+
+      - name: Notify
+        if: success()
+        run: |
+          echo "Deployed ${{ inputs.app_id }} to TestFlight"
