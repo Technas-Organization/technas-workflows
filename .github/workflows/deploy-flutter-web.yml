@@ -186,17 +186,38 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-
-      - name: Login to registry
-        uses: docker/login-action@v3
         with:
-          registry: ${{ inputs.registry }}
-          username: ${{ secrets.TECHNAS_REGISTRY_USER || secrets.DOCKER_REGISTRY_USER }}
-          password: ${{ secrets.TECHNAS_REGISTRY_PASSWORD || secrets.DOCKER_REGISTRY_PASSWORD }}
+          # In-cluster mirrors so builds never touch the public hosts:
+          # docker.io → Nexus dockerhub-proxy (dodges Hub 429), docker.technas.fr
+          # → in-cluster registry (resolves FROM docker.technas.fr/flutter base
+          # images internally once the public host is WAF-locked).
+          buildkitd-config-inline: |
+            [registry."docker.io"]
+              mirrors = ["nexus.technas-infra.svc.cluster.local:8082"]
+            [registry."nexus.technas-infra.svc.cluster.local:8082"]
+              http = true
+            [registry."docker.technas.fr"]
+              mirrors = ["docker-registry.technas-infra.svc.cluster.local:5000"]
+            [registry."docker-registry.technas-infra.svc.cluster.local:5000"]
+              http = true
+
+      # No registry login: pushes go to the in-cluster registry (anonymous http).
 
       - name: Compute tag
         id: tag
         run: echo "image_tag=${GITHUB_SHA::12}-${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+
+      - name: Compute in-cluster push image
+        id: push
+        run: |
+          # Swap the public registry host for the in-cluster registry, keeping
+          # the repo path identical so the image nodes pull (via the containerd
+          # mirror on inputs.image_name) is byte-for-byte the one we push here.
+          PUSH_IMAGE="docker-registry.technas-infra.svc.cluster.local:5000/${IMAGE_NAME#${REGISTRY}/}"
+          echo "image=$PUSH_IMAGE" >> "$GITHUB_OUTPUT"
+        env:
+          IMAGE_NAME: ${{ inputs.image_name }}
+          REGISTRY: ${{ inputs.registry }}
 
       - name: Build & push (linux/amd64)
         uses: docker/build-push-action@v6
@@ -210,8 +231,8 @@ jobs:
           provenance: false
           sbom: false
           tags: |
-            ${{ inputs.image_name }}:latest
-            ${{ inputs.image_name }}:${{ steps.tag.outputs.image_tag }}
+            ${{ steps.push.outputs.image }}:latest
+            ${{ steps.push.outputs.image }}:${{ steps.tag.outputs.image_tag }}
           cache-from: type=gha,scope=${{ inputs.k8s_deployment }}
           cache-to: type=gha,mode=max,scope=${{ inputs.k8s_deployment }}
 
