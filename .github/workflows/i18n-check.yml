@@ -56,8 +56,9 @@ jobs:
           NX_P: ${{ secrets.NEXUS_PASSWORD }}
         run: |
           mkdir -p "$HOME/.config/pip"
-          printf "machine nexus.technas.fr\nlogin %s\npassword %s\n" "$NX_U" "$NX_P" > "$HOME/.netrc"
-          printf "[global]\nextra-index-url = https://%s:%s@nexus.technas.fr/repository/technas-pypi-hosted/simple/\n" "$NX_U" "$NX_P" > "$HOME/.config/pip/pip.conf"
+          # In-cluster anonymous Nexus (public nexus.technas.fr is WAF IP-locked;
+          # the ARC runner egress is not allowlisted). No creds needed for read.
+          printf "[global]\nextra-index-url = http://nexus.technas-infra.svc.cluster.local:8081/repository/technas-pypi-hosted/simple/\ntrusted-host = nexus.technas-infra.svc.cluster.local\n" > "$HOME/.config/pip/pip.conf"
 
       - name: Install technas-i18n CLI
         run: |
