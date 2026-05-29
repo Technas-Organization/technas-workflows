@@ -37,7 +37,9 @@ on:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    # ARC self-hosted runner — never ubuntu-latest (org Free plan has 0
+    # GitHub-hosted minutes, jobs die instantly on a billing error).
+    runs-on: technas-backend-build
     steps:
       - uses: actions/checkout@v4
         with:
