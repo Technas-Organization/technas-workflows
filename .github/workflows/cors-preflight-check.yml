@@ -1,0 +1,120 @@
+name: CORS preflight check (reusable)
+
+# Static guardrail against the recurring "works on mobile, breaks on web" CORS
+# bug. Mobile (Dart io.HttpClient) does NOT issue CORS preflights, so a missing
+# Access-Control-Allow-Headers entry is invisible until a browser hits the route
+# and the OPTIONS preflight is rejected. We burned hours on this (booking SSE
+# stream: the browser sends Cache-Control / Last-Event-ID, the gateway didn't
+# allow them → stream never connected).
+#
+# This check scans every gateway config in the repo (any file declaring
+# `Access-Control-Allow-Headers`) and, for each one that looks like an
+# AUTHENTICATED APP API gateway (its allow-headers already lists `Authorization`,
+# i.e. the Flutter/web app sends a Bearer token through it), asserts the
+# browser/SSE BASELINE request headers are also allowed. Pure internal-tool
+# ingresses (nexus, registry, …) that don't carry `Authorization` are skipped.
+#
+# Usage (thin caller in a product repo):
+#   jobs:
+#     cors:
+#       uses: Technas-Organization/technas-workflows/.github/workflows/cors-preflight-check.yml@main
+#       # optional: with: { extra_required: "x-foo,x-bar", paths: "k8s/**/*.yaml" }
+
+on:
+  workflow_call:
+    inputs:
+      paths:
+        description: "Glob(s) to scan, newline- or comma-separated. Default: scan the whole repo."
+        required: false
+        type: string
+        default: ""
+      extra_required:
+        description: "Comma-separated extra headers to require on app API gateways (case-insensitive)."
+        required: false
+        type: string
+        default: ""
+
+jobs:
+  cors-preflight-check:
+    name: CORS allow-headers baseline
+    runs-on: technas-backend-build
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Check gateway Access-Control-Allow-Headers baseline
+        env:
+          EXTRA_REQUIRED: ${{ inputs.extra_required }}
+          SCAN_PATHS: ${{ inputs.paths }}
+        run: |
+          python3 - <<'PY'
+          import os, re, sys, glob
+
+          # Browser/SSE baseline: headers a web client (incl. EventSource) sends
+          # that mobile never does. Authorization/Content-Type are implied by the
+          # gateway being an app API gateway; the rest are the silent web breakers.
+          BASELINE = {
+              "content-type", "accept", "x-requested-with",
+              "cache-control", "last-event-id",
+          }
+          extra = {h.strip().lower() for h in os.environ.get("EXTRA_REQUIRED", "").split(",") if h.strip()}
+          REQUIRED = BASELINE | extra
+
+          # Discover candidate files: anything declaring the header. Honour the
+          # optional paths input, else scan all yaml/yml/conf/template in repo.
+          scan = os.environ.get("SCAN_PATHS", "").strip()
+          if scan:
+              globs = [p.strip() for p in re.split(r"[\n,]", scan) if p.strip()]
+          else:
+              globs = ["**/*.yaml", "**/*.yml", "**/*.conf", "**/*.template", "**/*.tmpl"]
+          files = set()
+          for g in globs:
+              files.update(glob.glob(g, recursive=True))
+
+          SKIP_DIRS = ("/node_modules/", "/.venv/", "/site-packages/", "/.git/", "/.claude/worktrees/")
+          header_re = re.compile(r'Access-Control-Allow-Headers["\s:]+["\']?([^"\';\n]+)', re.IGNORECASE)
+
+          violations = []
+          checked = 0
+          for path in sorted(files):
+              if any(s in f"/{path}" for s in SKIP_DIRS):
+                  continue
+              try:
+                  text = open(path, encoding="utf-8", errors="ignore").read()
+              except Exception:
+                  continue
+              for m in header_re.finditer(text):
+                  raw = m.group(1)
+                  allowed = {h.strip().lower() for h in raw.split(",") if h.strip()}
+                  # Only enforce on AUTHENTICATED APP API gateways: those whose
+                  # allow-headers already include `authorization` (the app sends a
+                  # Bearer token). Internal-tool ingresses without it are skipped.
+                  if "authorization" not in allowed:
+                      continue
+                  checked += 1
+                  missing = sorted(REQUIRED - allowed)
+                  if missing:
+                      violations.append((path, missing, raw.strip()))
+
+          if checked == 0:
+              print("No authenticated app API gateway (with Authorization in "
+                    "Access-Control-Allow-Headers) found to check — skipping.")
+              sys.exit(0)
+
+          if violations:
+              print("::error::CORS allow-headers baseline violation(s) — these "
+                    "routes work on mobile but break on web (preflight rejected):\n")
+              for path, missing, raw in violations:
+                  print(f"  ✗ {path}")
+                  print(f"      missing: {', '.join(missing)}")
+                  print(f"      current: {raw}\n")
+              print("Add the missing headers to Access-Control-Allow-Headers in "
+                    "the gateway config. Baseline required on app API gateways: "
+                    f"{', '.join(sorted(REQUIRED))}")
+              sys.exit(1)
+
+          print(f"OK — {checked} app API gateway CORS block(s) include the "
+                f"web/SSE baseline ({', '.join(sorted(REQUIRED))}).")
+          PY
