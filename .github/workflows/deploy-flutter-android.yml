@@ -250,19 +250,18 @@ jobs:
           set -e
           AAB="${{ inputs.app_dir }}/build/app/outputs/bundle/release/app-release.aab"
           OBJ="ci-builds/${{ inputs.app_id }}-${{ github.run_id }}.aab"
+          HOST="https://${MINIO_ACCESS_KEY}:${MINIO_SECRET_KEY}@media.technas.fr"
+          # minio/mc a `mc` comme ENTRYPOINT → on passe les sous-commandes directement
+          # (PAS `sh -c`, qui devient `mc sh`). 2 runs : cp puis share.
           docker run --rm --network host -v "$PWD:/w" -w /w \
-            -e MC_HOST_m="https://${MINIO_ACCESS_KEY}:${MINIO_SECRET_KEY}@media.technas.fr" \
-            minio/mc:latest sh -c "
-              set -e
-              mc cp \"/w/$AAB\" m/eclatdor-albums/\"$OBJ\"
-              echo '---PRESIGNED---'
-              mc share download --expire 168h m/eclatdor-albums/\"$OBJ\" | sed -n 's/^Share: //p'
-            " | tee /tmp/mc.out
-          URL=$(grep -A1 '^---PRESIGNED---' /tmp/mc.out | tail -1 | tr -d '\r')
+            -e MC_HOST_m="$HOST" \
+            minio/mc:latest cp "/w/$AAB" "m/eclatdor-albums/$OBJ"
+          docker run --rm --network host \
+            -e MC_HOST_m="$HOST" \
+            minio/mc:latest share download --expire 168h "m/eclatdor-albums/$OBJ" | tee /tmp/mc.out
+          URL=$(grep -oE 'https?://[^ ]*X-Amz[^ ]*' /tmp/mc.out | head -1 | tr -d '\r')
           echo "::notice title=AAB download (7j)::$URL"
-          echo "### 📦 AAB Éclat d'Or — lien direct (7 jours)" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "$URL" >> "$GITHUB_STEP_SUMMARY"
+          { echo "### 📦 AAB ${{ inputs.app_id }} — lien direct (7 jours)"; echo ""; echo "$URL"; } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Deploy to Google Play
         id: deploy_play
