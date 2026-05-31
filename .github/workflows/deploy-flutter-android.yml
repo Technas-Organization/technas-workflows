@@ -49,6 +49,10 @@ on:
         description: "Comma-separated KEY=VALUE pairs passed as --dart-define."
         type: string
         default: ''
+      env_copy_from:
+        description: "Optional file (relative to app_dir) to copy to <app_dir>/.env before build (e.g. config/env.mobile). The app reads it at runtime via flutter_dotenv."
+        type: string
+        default: ''
       skip_play_store:
         description: "Build + upload artifact only; skip the Google Play upload."
         type: boolean
@@ -67,6 +71,18 @@ on:
         description: "Ref of technas-workflows to check out for Dockerfile + helper + scripts."
         type: string
         default: main
+      build_memory_limit:
+        description: >-
+          Plafond mémoire DUR (cgroup) sur le conteneur de build AAB, ex '4608m'.
+          Vide (défaut) = aucun plafond — pour les machines de build dédiées
+          (technas-android-build) qui ont de la RAM à revendre. À RENSEIGNER quand le
+          build tourne sur un runner ARC partagé (nœud 8 Go) : le build R8/bundle
+          s'exécute dans un docker imbriqué dont le cgroup ÉCHAPPE à la limite du pod
+          runner, donc sans ce plafond un build qui dérape remplit le nœud → kubelet
+          OOM → NotReady (emporte tous les pods du nœud). Avec, le conteneur de build
+          OOM proprement (le job échoue/retry) et le nœud survit.
+        type: string
+        default: ''
     secrets:
       PACKAGES_PAT:
         required: false
@@ -79,7 +95,13 @@ on:
       ANDROID_KEY_ALIAS:
         required: true
       PLAY_STORE_JSON_KEY:
-        required: true
+        required: false
+      PLAY_STORE_JSON_KEY_OVERRIDE:
+        # Optional per-variant Google Play service-account key. When set it WINS
+        # over PLAY_STORE_JSON_KEY, letting a multi-variant caller (e.g. a partner
+        # app with its own Play listing) route a different key without renaming
+        # secrets. Mirrors the MATCH_GIT_URL_GITHUB || MATCH_GIT_URL fallback on iOS.
+        required: false
 
 permissions:
   contents: read
@@ -113,6 +135,11 @@ jobs:
           ref: ${{ inputs.workflows_ref }}
           path: .technas-workflows
           token: ${{ secrets.PACKAGES_PAT || github.token }}
+
+      - name: Copy environment file
+        if: inputs.env_copy_from != ''
+        working-directory: ${{ inputs.app_dir }}
+        run: cp "${{ inputs.env_copy_from }}" .env
 
       - name: Build mobile-builder CI image
         run: |
@@ -160,7 +187,17 @@ jobs:
               define_args="$define_args --dart-define=$p"
             done
           fi
-          docker run --rm \
+          # Plafond mémoire DUR sur le build imbriqué (sûreté nœud sur runner ARC).
+          # Le build R8/bundle s'exécute dans CE docker run, dont le cgroup échappe à
+          # la limite mémoire du pod runner → sans ce --memory il peut remplir le nœud
+          # (kubelet OOM → NotReady). Avec, un dérapage OOM le conteneur de build
+          # (le job retry), pas le nœud. Vide sur machine dédiée = comportement inchangé.
+          MEM_FLAG=""
+          if [ -n "${{ inputs.build_memory_limit }}" ]; then
+            MEM_FLAG="--memory=${{ inputs.build_memory_limit }} --memory-swap=${{ inputs.build_memory_limit }}"
+            echo "::notice::Build AAB plafonné à ${{ inputs.build_memory_limit }} (cgroup, sûreté nœud ARC)"
+          fi
+          docker run --rm $MEM_FLAG \
             -e PUB_CACHE=/workspace/.pub-cache \
             -v "${{ github.workspace }}:/workspace" \
             -w "/workspace/${{ inputs.app_dir }}" \
@@ -191,7 +228,7 @@ jobs:
         id: deploy_play
         if: ${{ !inputs.skip_play_store }}
         env:
-          PLAY_STORE_JSON_KEY: ${{ secrets.PLAY_STORE_JSON_KEY }}
+          PLAY_STORE_JSON_KEY: ${{ secrets.PLAY_STORE_JSON_KEY_OVERRIDE || secrets.PLAY_STORE_JSON_KEY }}
         run: |
           # The per-app Fastfile requires the shared helper via the
           # TECHNAS_FASTLANE_HELPERS env var (the technas-workflows fastlane dir
