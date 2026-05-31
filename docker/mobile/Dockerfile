@@ -40,6 +40,13 @@ RUN yes | flutter doctor --android-licenses \
     && flutter config --android-sdk $ANDROID_SDK_ROOT \
     && flutter precache
 
-RUN gem install bundler --no-document
+# bundler : rubygems.org est parfois injoignable / renvoie un index corrompu
+# depuis les runners ARC (egress restreint + mirror Nexus) → 1 retry puis fallback
+# sur le paquet apt (mirror Debian, lui, toujours joignable). Sur un runner à
+# egress libre (ex: machine dédiée BG) le 1er `gem install` réussit → comportement
+# inchangé. Évite que le build de l'image dépende d'un seul chemin réseau.
+RUN gem install bundler --no-document \
+    || gem install bundler --no-document \
+    || (apt-get update && apt-get install -y ruby-bundler && rm -rf /var/lib/apt/lists/*)
 
 RUN flutter doctor -v
