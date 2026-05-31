@@ -83,6 +83,14 @@ on:
           OOM proprement (le job échoue/retry) et le nœud survit.
         type: string
         default: ''
+      aab_minio_upload:
+        description: >-
+          Si true : pousse l'AAB sur MinIO (bucket eclatdor-albums, préfixe
+          ci-builds/) et émet une URL presignée 7 jours en notice. Sert quand le
+          quota d'artifacts GitHub (plan Free) est plein — livraison indépendante
+          du stockage Actions. Nécessite MINIO_ACCESS_KEY/MINIO_SECRET_KEY.
+        type: boolean
+        default: false
     secrets:
       PACKAGES_PAT:
         required: false
@@ -101,6 +109,12 @@ on:
         # over PLAY_STORE_JSON_KEY, letting a multi-variant caller (e.g. a partner
         # app with its own Play listing) route a different key without renaming
         # secrets. Mirrors the MATCH_GIT_URL_GITHUB || MATCH_GIT_URL fallback on iOS.
+        required: false
+      MINIO_ACCESS_KEY:
+        # Optionnel — requis seulement si aab_minio_upload=true (livraison AAB via
+        # MinIO quand le quota d'artifacts GitHub Free est plein).
+        required: false
+      MINIO_SECRET_KEY:
         required: false
 
 permissions:
@@ -223,6 +237,32 @@ jobs:
           name: ${{ inputs.app_id }}-aab
           path: ${{ inputs.app_dir }}/build/app/outputs/bundle/release/app-release.aab
           retention-days: 7
+
+      # Livraison indépendante du quota d'artifacts GitHub (plein sur plan Free) :
+      # pousse l'AAB sur MinIO via mc (le runner ARC est in-cluster, atteint
+      # media.technas.fr) et émet une URL presignée 7 jours en notice.
+      - name: Upload AAB to MinIO (quota-independent delivery)
+        if: ${{ inputs.aab_minio_upload && success() }}
+        env:
+          MINIO_ACCESS_KEY: ${{ secrets.MINIO_ACCESS_KEY }}
+          MINIO_SECRET_KEY: ${{ secrets.MINIO_SECRET_KEY }}
+        run: |
+          set -e
+          AAB="${{ inputs.app_dir }}/build/app/outputs/bundle/release/app-release.aab"
+          OBJ="ci-builds/${{ inputs.app_id }}-${{ github.run_id }}.aab"
+          docker run --rm --network host -v "$PWD:/w" -w /w \
+            -e MC_HOST_m="https://${MINIO_ACCESS_KEY}:${MINIO_SECRET_KEY}@media.technas.fr" \
+            minio/mc:latest sh -c "
+              set -e
+              mc cp \"/w/$AAB\" m/eclatdor-albums/\"$OBJ\"
+              echo '---PRESIGNED---'
+              mc share download --expire 168h m/eclatdor-albums/\"$OBJ\" | sed -n 's/^Share: //p'
+            " | tee /tmp/mc.out
+          URL=$(grep -A1 '^---PRESIGNED---' /tmp/mc.out | tail -1 | tr -d '\r')
+          echo "::notice title=AAB download (7j)::$URL"
+          echo "### 📦 AAB Éclat d'Or — lien direct (7 jours)" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "$URL" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Deploy to Google Play
         id: deploy_play
