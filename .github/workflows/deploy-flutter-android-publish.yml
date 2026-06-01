@@ -1,0 +1,139 @@
+name: deploy-flutter-android-publish (reusable)
+
+# Re-publie sur Google Play un AAB DÉJÀ buildé (récupéré depuis MinIO), SANS
+# refaire `flutter build appbundle` (~8 min économisées). Sert à :
+#   - rejouer juste la phase `fastlane supply` après un échec Play (permission,
+#     config, track) — au lieu de re-builder toute l'app ;
+#   - promouvoir un build existant vers un autre track.
+# L'AAB vient du bucket MinIO où le build l'a poussé (cf. input `aab_minio_upload`
+# de deploy-flutter-android.yml, qui écrit `ci-builds/<app_id>-<run_id>.aab`).
+
+on:
+  workflow_call:
+    inputs:
+      app_dir:
+        description: "Chemin de l'app Flutter (dossier du pubspec.yaml)."
+        type: string
+        required: true
+      app_id:
+        description: "applicationId Play, ex fr.technas.eclatdor."
+        type: string
+        required: true
+      track:
+        description: "Track Google Play : internal | alpha | beta | production."
+        type: string
+        default: internal
+      bucket:
+        description: "Bucket MinIO où le build a poussé l'AAB."
+        type: string
+        default: eclatdor-ci
+      aab_object:
+        description: >-
+          Clé de l'AAB sous <bucket>/ (ex `ci-builds/fr.technas.eclatdor-123.aab`).
+          Vide = le PLUS RÉCENT `ci-builds/<app_id>-*.aab` du bucket.
+        type: string
+        default: ''
+      android_runner:
+        type: string
+        default: '["technas-backend-build"]'
+      workflows_ref:
+        type: string
+        default: main
+    secrets:
+      PLAY_STORE_JSON_KEY:
+        required: true
+      MINIO_ACCESS_KEY:
+        required: true
+      MINIO_SECRET_KEY:
+        required: true
+      PACKAGES_PAT:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ${{ fromJSON(inputs.android_runner) }}
+    env:
+      MOBILE_BUILDER_IMAGE: technas-mobile-builder:ci
+    steps:
+      - name: Reset workspace directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          WS="${{ github.workspace }}"
+          mkdir -p "$WS"
+          docker run --rm -v "$WS:/ws" alpine:3.20 sh -c "chown -R $(id -u):$(id -g) /ws"
+          shopt -s dotglob nullglob
+          rm -rf "${WS:?}"/*
+
+      - name: Checkout app
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.PACKAGES_PAT || github.token }}
+
+      - name: Checkout technas-workflows (Dockerfile + fastlane helper)
+        uses: actions/checkout@v4
+        with:
+          repository: Technas-Organization/technas-workflows
+          ref: ${{ inputs.workflows_ref }}
+          path: .technas-workflows
+          token: ${{ secrets.PACKAGES_PAT || github.token }}
+
+      - name: Build mobile-builder CI image
+        run: |
+          docker build -t "$MOBILE_BUILDER_IMAGE" \
+            -f .technas-workflows/docker/mobile/Dockerfile \
+            .technas-workflows
+
+      - name: Pull AAB depuis MinIO
+        env:
+          MINIO_ACCESS_KEY: ${{ secrets.MINIO_ACCESS_KEY }}
+          MINIO_SECRET_KEY: ${{ secrets.MINIO_SECRET_KEY }}
+          AAB_OBJECT: ${{ inputs.aab_object }}
+          BUCKET: ${{ inputs.bucket }}
+          APP_ID: ${{ inputs.app_id }}
+          APP_DIR: ${{ inputs.app_dir }}
+        run: |
+          set -e
+          DEST="$APP_DIR/build/app/outputs/bundle/release"
+          mkdir -p "$DEST"
+          mc() { docker run --rm --network host -v "$PWD:/w" -w /w minio/mc:latest --config-dir /w/.mccfg "$@"; }
+          mc alias set m https://media.technas.fr "$MINIO_ACCESS_KEY" "$MINIO_SECRET_KEY"
+          OBJ="$AAB_OBJECT"
+          if [ -z "$OBJ" ]; then
+            # Dernier AAB de cette app dans ci-builds/ (tri lexical = ordre run_id).
+            OBJ=$(mc ls --recursive "m/$BUCKET/ci-builds/" 2>/dev/null \
+                  | awk '{print $NF}' | grep "${APP_ID}-" | sort | tail -1)
+            echo "Dernier AAB détecté : $OBJ"
+          fi
+          if [ -z "$OBJ" ]; then
+            echo "::error::Aucun AAB pour $APP_ID dans m/$BUCKET/ci-builds/ (lance d'abord un build avec aab_minio_upload:true)"
+            exit 1
+          fi
+          case "$OBJ" in
+            "$BUCKET"/*) SRC="m/$OBJ" ;;
+            ci-builds/*) SRC="m/$BUCKET/$OBJ" ;;
+            *)           SRC="m/$BUCKET/ci-builds/$OBJ" ;;
+          esac
+          echo "Téléchargement $SRC"
+          mc cp "$SRC" "/w/$DEST/app-release.aab"
+          docker run --rm -v "$PWD:/w" -w /w --entrypoint rm minio/mc:latest -rf /w/.mccfg || true
+          ls -la "$DEST/app-release.aab"
+
+      - name: Deploy to Google Play (fastlane supply, sans rebuild)
+        env:
+          PLAY_STORE_JSON_KEY: ${{ secrets.PLAY_STORE_JSON_KEY }}
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}:/workspace" \
+            -w "/workspace/${{ inputs.app_dir }}/android" \
+            -e PLAY_STORE_JSON_KEY \
+            -e TECHNAS_FASTLANE_HELPERS=/workspace/.technas-workflows/fastlane \
+            "$MOBILE_BUILDER_IMAGE" \
+            bash -lc 'bundle install && bundle exec fastlane deploy track:${{ inputs.track }}'
+
+      - name: Notify
+        if: success()
+        run: echo "Re-publié ${{ inputs.app_id }} sur Google Play track ${{ inputs.track }} (sans rebuild)"
