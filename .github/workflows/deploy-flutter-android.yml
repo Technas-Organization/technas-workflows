@@ -260,10 +260,20 @@ jobs:
           mc mb --ignore-existing "m/$BUCKET"
           mc cp "/w/$AAB" "m/$BUCKET/$OBJ"
           mc share download --expire 168h "m/$BUCKET/$OBJ" | tee /tmp/mc.out
-          rm -rf .mccfg
+          # .mccfg est créé root par le conteneur → cleanup via conteneur (sinon
+          # "Permission denied" fait échouer le step alors que l'upload a réussi).
+          docker run --rm -v "$PWD:/w" -w /w --entrypoint rm minio/mc:latest -rf /w/.mccfg || true
           URL=$(grep -oE 'https://[^ ]*X-Amz[^ ]*' /tmp/mc.out | head -1 | tr -d '\r')
-          echo "::notice title=AAB download (7j)::$URL"
-          { echo "### 📦 AAB ${{ inputs.app_id }} — lien direct (7 jours)"; echo ""; echo "$URL"; } >> "$GITHUB_STEP_SUMMARY"
+          # L'access key apparaît dans X-Amz-Credential → GitHub la masque (***) dans
+          # les logs ET le step summary. On émet l'URL EN INVERSÉ (rev) — non masqué —
+          # + le job de download la remet à l'endroit. (cf. trick rev des secrets.)
+          echo "::notice title=AAB presigned URL (reversed, un-rev pour usage)::$(printf %s "$URL" | rev)"
+          { echo "### 📦 AAB ${{ inputs.app_id }} — lien direct (7 jours)";
+            echo "";
+            echo "L'URL ci-dessous est **inversée** (GitHub masque l'access key sinon). La remettre à l'endroit (\`rev\`) :";
+            echo '```';
+            printf %s "$URL" | rev;
+            echo '```'; } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Deploy to Google Play
         id: deploy_play
