@@ -38,12 +38,14 @@ def addNexus = { repos ->
 if (nexusUrl) {
     logger.lifecycle("[technas-cache] Maven via Nexus: ${nexusUrl}")
 
-    // Niveau settings : pluginManagement (résolution des plugins AGP/Kotlin) +
-    // dependencyResolutionManagement (inerte si l'app ne l'utilise pas, cas
-    // Flutter standard ; sinon Nexus y est injecté en tête).
+    // Niveau settings : pluginManagement (résolution des plugins AGP/Kotlin).
+    // On NE touche PAS dependencyResolutionManagement : l'app peut être en
+    // FAIL_ON_PROJECT_REPOS / PREFER_SETTINGS, auquel cas injecter un repo au
+    // niveau settings ferait échouer le build dès qu'un projet déclare ses repos
+    // (ce que fait le build.gradle Flutter via allprojects). On prépend donc Nexus
+    // uniquement là où l'app déclare DÉJÀ ses repos : au niveau projet (ci-dessous).
     beforeSettings { settings ->
         settings.pluginManagement { addNexus(it.repositories) }
-        settings.dependencyResolutionManagement { addNexus(it.repositories) }
     }
 
     // Niveau projet : classpath buildscript + repos de résolution des deps.
