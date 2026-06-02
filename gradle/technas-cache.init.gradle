@@ -39,16 +39,26 @@ if (nexusUrl) {
     logger.lifecycle("[technas-cache] Maven via Nexus: ${nexusUrl}")
 
     // Niveau settings : pluginManagement (résolution des plugins AGP/Kotlin).
-    // On NE touche PAS dependencyResolutionManagement : l'app peut être en
-    // FAIL_ON_PROJECT_REPOS / PREFER_SETTINGS, auquel cas injecter un repo au
-    // niveau settings ferait échouer le build dès qu'un projet déclare ses repos
-    // (ce que fait le build.gradle Flutter via allprojects). On prépend donc Nexus
-    // uniquement là où l'app déclare DÉJÀ ses repos : au niveau projet (ci-dessous).
     beforeSettings { settings ->
         settings.pluginManagement { addNexus(it.repositories) }
     }
 
+    // Le plugin loader Flutter (ou un build inclus) pose repositoriesMode =
+    // PREFER_SETTINGS, ce qui INTERDIT les repos déclarés au niveau projet (et
+    // ferait échouer le build dès qu'on en prépend un : "prefer settings
+    // repositories over project repositories"). On force PREFER_PROJECT — c'est
+    // déjà la sémantique effective du baseline (le build.gradle déclare
+    // google()/mavenCentral() via allprojects et ils SONT utilisés). Posé en
+    // settingsEvaluated pour gagner sur le script de settings de l'app.
+    settingsEvaluated { settings ->
+        settings.dependencyResolutionManagement.repositoriesMode.set(
+            org.gradle.api.initialization.resolve.RepositoriesMode.PREFER_PROJECT)
+    }
+
     // Niveau projet : classpath buildscript + repos de résolution des deps.
+    // L'action allprojects d'un init script s'exécute AVANT le build.gradle de
+    // l'app → Nexus se retrouve EN TÊTE (google/mavenCentral/repo Jitsi ajoutés
+    // après, en fallback).
     allprojects { proj ->
         addNexus(proj.buildscript.repositories)
         addNexus(proj.repositories)
