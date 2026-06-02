@@ -40,7 +40,11 @@ module TechnasIosHelper
       in_house: false
     )
 
-    cocoapods(clean: true, podfile: "./Podfile")
+    # PAS de clean install : sur les runners Mac persistants, réutiliser Pods/
+    # + le DerivedData chaud évite de re-télécharger/recompiler les pods lourds
+    # (ex. JitsiMeetSDK/WebRTC ~3 min) à chaque build. Podfile.lock garantit la
+    # cohérence. (`clean: true` était aussi déprécié → '-clean'.)
+    cocoapods(podfile: "./Podfile")
 
     # MATCH_FORCE_REFRESH=true bypasses readonly + forces Match to re-sync the
     # App ID capabilities with what is in Runner.entitlements, regenerating the
