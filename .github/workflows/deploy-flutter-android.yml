@@ -91,6 +91,24 @@ on:
           du stockage Actions. Nécessite MINIO_ACCESS_KEY/MINIO_SECRET_KEY.
         type: boolean
         default: false
+      gradle_cache:
+        description: >-
+          Active les caches distants Gradle in-cluster (proxy Maven Nexus +
+          remote build cache HttpBuildCache) via un init.gradle injecté. Pensé
+          pour les runners ARC ÉPHÉMÈRES : évite de re-télécharger l'aar Jitsi +
+          androidx + plugins à chaque run et réutilise les sorties de tâches
+          (dex/R8). Nécessite que le runner soit in-cluster (ClusterIP). OFF par
+          défaut — n'altère AUCUN build existant tant qu'il n'est pas activé.
+        type: boolean
+        default: false
+      gradle_cache_nexus_url:
+        description: "URL du groupe Maven Nexus (proxy des téléchargements). Interne ClusterIP."
+        type: string
+        default: 'http://nexus.technas-infra.svc.cluster.local:8081/repository/maven-public/'
+      gradle_cache_remote_url:
+        description: "URL du remote Gradle build cache (sorties de tâches). Interne ClusterIP."
+        type: string
+        default: 'http://gradle-build-cache.technas-infra.svc.cluster.local:5071/cache/'
     secrets:
       PACKAGES_PAT:
         required: false
@@ -149,6 +167,19 @@ jobs:
           ref: ${{ inputs.workflows_ref }}
           path: .technas-workflows
           token: ${{ secrets.PACKAGES_PAT || github.token }}
+
+      # Caches distants Gradle (gated par gradle_cache). On dépose l'init script
+      # partagé dans le GRADLE_USER_HOME du build (=/workspace/.gradle vu dans le
+      # conteneur) : Gradle auto-applique tout init.d/*.gradle. Les URLs Nexus +
+      # build-cache sont passées au conteneur en variables d'env (cf. step Build).
+      - name: Install Gradle cache init script
+        if: inputs.gradle_cache
+        run: |
+          set -euo pipefail
+          mkdir -p "${{ github.workspace }}/.gradle/init.d"
+          cp .technas-workflows/gradle/technas-cache.init.gradle \
+             "${{ github.workspace }}/.gradle/init.d/technas-cache.gradle"
+          echo "::notice::Gradle remote caches ON — Nexus Maven + HttpBuildCache (init.d injecté)"
 
       - name: Copy environment file
         if: inputs.env_copy_from != ''
@@ -211,7 +242,19 @@ jobs:
             MEM_FLAG="--memory=${{ inputs.build_memory_limit }} --memory-swap=${{ inputs.build_memory_limit }}"
             echo "::notice::Build AAB plafonné à ${{ inputs.build_memory_limit }} (cgroup, sûreté nœud ARC)"
           fi
-          docker run --rm $MEM_FLAG \
+          # Caches distants Gradle (gated). --network host : le build tourne en
+          # docker imbriqué dont le resolv.conf n'a PAS coredns → sans host network
+          # il ne résout pas *.svc.cluster.local ni n'atteint les ClusterIP Nexus/
+          # build-cache (même contrainte que l'upload MinIO plus bas). GRADLE_USER_HOME
+          # pointe sur /workspace/.gradle où l'init.d a été déposé.
+          CACHE_FLAGS=""
+          if [ "${{ inputs.gradle_cache }}" = "true" ]; then
+            CACHE_FLAGS="--network host \
+              -e GRADLE_USER_HOME=/workspace/.gradle \
+              -e NEXUS_MAVEN_URL=${{ inputs.gradle_cache_nexus_url }} \
+              -e GRADLE_REMOTE_CACHE_URL=${{ inputs.gradle_cache_remote_url }}"
+          fi
+          docker run --rm $MEM_FLAG $CACHE_FLAGS \
             -e PUB_CACHE=/workspace/.pub-cache \
             -v "${{ github.workspace }}:/workspace" \
             -w "/workspace/${{ inputs.app_dir }}" \

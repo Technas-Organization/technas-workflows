@@ -1,0 +1,75 @@
+// Technas — script d'init Gradle injecté par le workflow réutilisable
+// deploy-flutter-android.yml (input gradle_cache=true), JAMAIS commité dans les
+// apps. Il accélère les builds Android sur les runners ARC ÉPHÉMÈRES (où
+// ~/.gradle et ~/.pub-cache repartent de zéro à chaque run) via DEUX caches
+// DISTANTS in-cluster :
+//
+//   1. Proxy Maven Nexus (maven-public) — cache les TÉLÉCHARGEMENTS de
+//      dépendances (aar Jitsi ~4 Mo, androidx, plugins, kotlin…). On préfixe
+//      le repo Nexus DEVANT les repos déclarés par les apps/plugins (y compris
+//      le repo github du fork Jitsi vendored) : Gradle l'interroge en premier,
+//      donc le download passe par Nexus ; les repos d'origine restent en
+//      fallback si Nexus ne proxyfie pas un artefact (correction préservée).
+//
+//   2. Remote Gradle build cache (HttpBuildCache) — cache les SORTIES de tâches
+//      (dex, R8, transforms…) → réutilisées d'un build à l'autre.
+//
+// Piloté par variables d'env (passées au conteneur de build par le workflow) :
+//   NEXUS_MAVEN_URL          ex http://nexus.technas-infra.svc.cluster.local:8081/repository/maven-public/
+//   GRADLE_REMOTE_CACHE_URL  ex http://gradle-build-cache.technas-infra.svc.cluster.local:5071/cache/
+// Si une variable est absente, le levier correspondant est simplement inactif
+// (aucune régression : on retombe sur le comportement Gradle par défaut).
+
+def nexusUrl = System.getenv('NEXUS_MAVEN_URL')?.trim()
+def cacheUrl = System.getenv('GRADLE_REMOTE_CACHE_URL')?.trim()
+
+if (nexusUrl) {
+    logger.lifecycle("[technas-cache] Maven via Nexus: ${nexusUrl}")
+
+    // --- niveau settings : pluginManagement + dependencyResolutionManagement ---
+    beforeSettings { settings ->
+        settings.pluginManagement {
+            repositories {
+                def nx = maven { it.url = uri(nexusUrl); it.allowInsecureProtocol = true; it.name = 'technasNexus' }
+                remove(nx); add(0, nx)   // prepend : Nexus interrogé en premier
+            }
+        }
+        // Si l'app n'utilise pas dependencyResolutionManagement (cas Flutter
+        // standard), ce bloc est inerte. Si elle l'utilise (mode PREFER/FAIL),
+        // on y injecte Nexus en tête pour rester cohérent.
+        settings.dependencyResolutionManagement {
+            repositories {
+                def nx = maven { it.url = uri(nexusUrl); it.allowInsecureProtocol = true; it.name = 'technasNexus' }
+                remove(nx); add(0, nx)
+            }
+        }
+    }
+
+    // --- niveau projet : buildscript classpath + repos de résolution ---
+    allprojects { proj ->
+        proj.buildscript.repositories {
+            def nx = maven { it.url = uri(nexusUrl); it.allowInsecureProtocol = true; it.name = 'technasNexus' }
+            remove(nx); add(0, nx)
+        }
+        proj.repositories {
+            def nx = maven { it.url = uri(nexusUrl); it.allowInsecureProtocol = true; it.name = 'technasNexus' }
+            remove(nx); add(0, nx)
+        }
+    }
+}
+
+if (cacheUrl) {
+    logger.lifecycle("[technas-cache] Remote build cache: ${cacheUrl}")
+    // Active le build cache sans toucher au gradle.properties des apps.
+    gradle.startParameter.buildCacheEnabled = true
+    settingsEvaluated { settings ->
+        settings.buildCache {
+            local { it.enabled = true }
+            remote(org.gradle.caching.http.HttpBuildCache) {
+                it.url = uri(cacheUrl)
+                it.push = true                 // les runners poussent leurs sorties
+                it.allowInsecureProtocol = true // service interne en http
+            }
+        }
+    }
+}
