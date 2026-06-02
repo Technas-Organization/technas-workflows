@@ -109,6 +109,21 @@ on:
         description: "URL du remote Gradle build cache (sorties de tâches). Interne ClusterIP."
         type: string
         default: 'http://gradle-build-cache.technas-infra.svc.cluster.local:5071/cache/'
+      builder_cache:
+        description: >-
+          Build l'image mobile-builder via buildx avec un cache de LAYERS distant
+          (registre interne) au lieu d'un `docker build` from-scratch. Sur runner
+          ARC éphémère (zéro cache de layers local) ça évite de re-télécharger le
+          SDK Android + re-`flutter precache` à chaque run quand le Dockerfile n'a
+          pas changé. Auto-réparant : si le cache/registre est indisponible, buildx
+          rebuild from-scratch (cache-from miss = non fatal). Nécessite un runner
+          in-cluster (atteint le registre). OFF par défaut.
+        type: boolean
+        default: false
+      builder_cache_registry:
+        description: "Registre interne pour le cache de layers buildx (http, in-cluster)."
+        type: string
+        default: 'docker-registry.technas-infra.svc.cluster.local:5000'
     secrets:
       PACKAGES_PAT:
         required: false
@@ -186,7 +201,36 @@ jobs:
         working-directory: ${{ inputs.app_dir }}
         run: cp "${{ inputs.env_copy_from }}" .env
 
-      - name: Build mobile-builder CI image
+      # --- Build de l'image mobile-builder ---
+      # Deux chemins : (a) buildx avec cache de layers distant (registre interne)
+      # quand builder_cache=true → near-instant si le Dockerfile n'a pas changé ;
+      # (b) plain `docker build` sinon (comportement historique inchangé).
+      - name: Set up Buildx (cache de layers image)
+        if: inputs.builder_cache
+        uses: docker/setup-buildx-action@v3
+        with:
+          # http=true : le registre interne sert en HTTP (le daemon dind n'a pas
+          # ce registre en insecure-registries, mais buildkit l'atteint via cette
+          # config sans toucher au daemon — même mécanisme que deploy-backends).
+          buildkitd-config-inline: |
+            [registry."${{ inputs.builder_cache_registry }}"]
+              http = true
+
+      - name: Build mobile-builder image (cache de layers distant)
+        if: inputs.builder_cache
+        uses: docker/build-push-action@v6
+        with:
+          context: .technas-workflows
+          file: .technas-workflows/docker/mobile/Dockerfile
+          tags: ${{ env.MOBILE_BUILDER_IMAGE }}
+          load: true              # charge l'image dans le daemon pour les docker run suivants
+          provenance: false       # cf. feedback_nexus_buildkit_provenance (corruption blobs)
+          sbom: false
+          cache-from: type=registry,ref=${{ inputs.builder_cache_registry }}/technas/mobile-builder:buildcache
+          cache-to: type=registry,ref=${{ inputs.builder_cache_registry }}/technas/mobile-builder:buildcache,mode=max
+
+      - name: Build mobile-builder CI image (plain)
+        if: ${{ !inputs.builder_cache }}
         run: |
           docker build -t "$MOBILE_BUILDER_IMAGE" \
             -f .technas-workflows/docker/mobile/Dockerfile \
@@ -254,12 +298,20 @@ jobs:
               -e NEXUS_MAVEN_URL=${{ inputs.gradle_cache_nexus_url }} \
               -e GRADLE_REMOTE_CACHE_URL=${{ inputs.gradle_cache_remote_url }}"
           fi
+          # `flutter clean` est REDONDANT sur un runner éphémère (checkout neuf →
+          # rien à nettoyer) et CONTRE-PRODUCTIF avec le cache (il efface le build
+          # dir que Gradle repeuplerait depuis le remote cache). On le saute quand
+          # gradle_cache est actif ; on le garde sinon (comportement historique).
+          BUILD_CMD="flutter build appbundle --release $define_args"
+          if [ "${{ inputs.gradle_cache }}" != "true" ]; then
+            BUILD_CMD="flutter clean && $BUILD_CMD"
+          fi
           docker run --rm $MEM_FLAG $CACHE_FLAGS \
             -e PUB_CACHE=/workspace/.pub-cache \
             -v "${{ github.workspace }}:/workspace" \
             -w "/workspace/${{ inputs.app_dir }}" \
             "$MOBILE_BUILDER_IMAGE" \
-            bash -lc "flutter clean && flutter build appbundle --release $define_args"
+            bash -lc "$BUILD_CMD"
 
       - name: Verify 16 KB ELF alignment in AAB (Play Store hard requirement)
         if: inputs.check_16kb_alignment
