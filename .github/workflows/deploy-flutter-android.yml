@@ -254,7 +254,18 @@ jobs:
         run: |
           set -e
           cd "${{ inputs.app_dir }}/android"
-          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > app/upload-keystore.jks
+          mkdir -p app
+          # Décodage tolérant : certains secrets keystore ont été collés avec des
+          # retours-ligne/espaces (cf. feedback_native_ci_secrets, "b64-mélangé")
+          # → `base64 -d` brut renvoie "invalid input". On strip tout whitespace
+          # avant de décoder (sans risque : le base64 valide n'en contient pas).
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | tr -d '[:space:]' | base64 -d > app/upload-keystore.jks
+          # Garde-fou : un keystore JKS/PKCS12 valide fait > 1 Ko ; un décodage raté
+          # (secret vide/double-b64) donnerait un fichier minuscule → on échoue net.
+          if [ "$(wc -c < app/upload-keystore.jks)" -lt 1000 ]; then
+            echo "::error::upload-keystore.jks décodé fait $(wc -c < app/upload-keystore.jks) octets — secret ANDROID_KEYSTORE_BASE64 invalide/mal encodé"
+            exit 1
+          fi
           cat > key.properties <<KEYEOF
           storePassword=${ANDROID_KEYSTORE_PASSWORD}
           keyPassword=${ANDROID_KEY_PASSWORD}
