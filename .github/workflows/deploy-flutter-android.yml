@@ -124,6 +124,10 @@ on:
         description: "Registre interne pour le cache de layers buildx (http, in-cluster)."
         type: string
         default: 'docker-registry.technas-infra.svc.cluster.local:5000'
+      build_verbose:
+        description: "Ajoute -v à `flutter build appbundle` (diagnostic, ex: identifier un plugin embedding v1)."
+        type: boolean
+        default: false
     secrets:
       PACKAGES_PAT:
         required: false
@@ -313,7 +317,9 @@ jobs:
           # rien à nettoyer) et CONTRE-PRODUCTIF avec le cache (il efface le build
           # dir que Gradle repeuplerait depuis le remote cache). On le saute quand
           # gradle_cache est actif ; on le garde sinon (comportement historique).
-          BUILD_CMD="flutter build appbundle --release $define_args"
+          VERBOSE=""
+          [ "${{ inputs.build_verbose }}" = "true" ] && VERBOSE=" -v"
+          BUILD_CMD="flutter build appbundle --release$VERBOSE $define_args"
           if [ "${{ inputs.gradle_cache }}" != "true" ]; then
             BUILD_CMD="flutter clean && $BUILD_CMD"
           fi
