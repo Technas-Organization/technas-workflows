@@ -5,56 +5,51 @@
 // DISTANTS in-cluster :
 //
 //   1. Proxy Maven Nexus (maven-public) — cache les TÉLÉCHARGEMENTS de
-//      dépendances (aar Jitsi ~4 Mo, androidx, plugins, kotlin…). On préfixe
-//      le repo Nexus DEVANT les repos déclarés par les apps/plugins (y compris
-//      le repo github du fork Jitsi vendored) : Gradle l'interroge en premier,
-//      donc le download passe par Nexus ; les repos d'origine restent en
-//      fallback si Nexus ne proxyfie pas un artefact (correction préservée).
-//
+//      dépendances (aar Jitsi ~4 Mo, androidx, plugins, kotlin…).
 //   2. Remote Gradle build cache (HttpBuildCache) — cache les SORTIES de tâches
 //      (dex, R8, transforms…) → réutilisées d'un build à l'autre.
+//
+// PRÉPENDANCE NATURELLE DE NEXUS : les callbacks d'un init script (beforeSettings,
+// allprojects) s'exécutent AVANT le settings.gradle / build.gradle de l'app. Le
+// repo Nexus ajouté ici se retrouve donc EN TÊTE des listes de repos (les
+// google()/mavenCentral()/repo github Jitsi déclarés ensuite sont AJOUTÉS APRÈS).
+// Gradle interroge Nexus en premier → les downloads passent par le proxy ; les
+// repos d'origine restent en fallback si Nexus ne proxyfie pas un artefact
+// (correction préservée). Couvre aussi le repo github du fork Jitsi vendored
+// (jitsi_meet_flutter_sdk/android/build.gradle) car ce module est un sous-projet
+// donc balayé par `allprojects`.
 //
 // Piloté par variables d'env (passées au conteneur de build par le workflow) :
 //   NEXUS_MAVEN_URL          ex http://nexus.technas-infra.svc.cluster.local:8081/repository/maven-public/
 //   GRADLE_REMOTE_CACHE_URL  ex http://gradle-build-cache.technas-infra.svc.cluster.local:5071/cache/
-// Si une variable est absente, le levier correspondant est simplement inactif
-// (aucune régression : on retombe sur le comportement Gradle par défaut).
+// Variable absente => levier inactif (aucune régression).
 
 def nexusUrl = System.getenv('NEXUS_MAVEN_URL')?.trim()
 def cacheUrl = System.getenv('GRADLE_REMOTE_CACHE_URL')?.trim()
 
+def addNexus = { repos ->
+    repos.maven { repo ->
+        repo.name = 'technasNexus'
+        repo.url = nexusUrl                  // setUrl(Object) accepte une String
+        repo.allowInsecureProtocol = true    // service interne en http
+    }
+}
+
 if (nexusUrl) {
     logger.lifecycle("[technas-cache] Maven via Nexus: ${nexusUrl}")
 
-    // --- niveau settings : pluginManagement + dependencyResolutionManagement ---
+    // Niveau settings : pluginManagement (résolution des plugins AGP/Kotlin) +
+    // dependencyResolutionManagement (inerte si l'app ne l'utilise pas, cas
+    // Flutter standard ; sinon Nexus y est injecté en tête).
     beforeSettings { settings ->
-        settings.pluginManagement {
-            repositories {
-                def nx = maven { it.url = uri(nexusUrl); it.allowInsecureProtocol = true; it.name = 'technasNexus' }
-                remove(nx); add(0, nx)   // prepend : Nexus interrogé en premier
-            }
-        }
-        // Si l'app n'utilise pas dependencyResolutionManagement (cas Flutter
-        // standard), ce bloc est inerte. Si elle l'utilise (mode PREFER/FAIL),
-        // on y injecte Nexus en tête pour rester cohérent.
-        settings.dependencyResolutionManagement {
-            repositories {
-                def nx = maven { it.url = uri(nexusUrl); it.allowInsecureProtocol = true; it.name = 'technasNexus' }
-                remove(nx); add(0, nx)
-            }
-        }
+        settings.pluginManagement { addNexus(it.repositories) }
+        settings.dependencyResolutionManagement { addNexus(it.repositories) }
     }
 
-    // --- niveau projet : buildscript classpath + repos de résolution ---
+    // Niveau projet : classpath buildscript + repos de résolution des deps.
     allprojects { proj ->
-        proj.buildscript.repositories {
-            def nx = maven { it.url = uri(nexusUrl); it.allowInsecureProtocol = true; it.name = 'technasNexus' }
-            remove(nx); add(0, nx)
-        }
-        proj.repositories {
-            def nx = maven { it.url = uri(nexusUrl); it.allowInsecureProtocol = true; it.name = 'technasNexus' }
-            remove(nx); add(0, nx)
-        }
+        addNexus(proj.buildscript.repositories)
+        addNexus(proj.repositories)
     }
 }
 
@@ -66,8 +61,8 @@ if (cacheUrl) {
         settings.buildCache {
             local { it.enabled = true }
             remote(org.gradle.caching.http.HttpBuildCache) {
-                it.url = uri(cacheUrl)
-                it.push = true                 // les runners poussent leurs sorties
+                it.url = new URI(cacheUrl)
+                it.push = true                  // les runners poussent leurs sorties
                 it.allowInsecureProtocol = true // service interne en http
             }
         }
