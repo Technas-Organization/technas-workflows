@@ -40,11 +40,14 @@ module TechnasIosHelper
       in_house: false
     )
 
-    # PAS de clean install : sur les runners Mac persistants, réutiliser Pods/
-    # + le DerivedData chaud évite de re-télécharger/recompiler les pods lourds
-    # (ex. JitsiMeetSDK/WebRTC ~3 min) à chaque build. Podfile.lock garantit la
-    # cohérence. (`clean: true` était aussi déprécié → '-clean'.)
-    cocoapods(podfile: "./Podfile")
+    # clean install REQUIS : les runners Mac sont PARTAGÉS entre produits
+    # (BeautyGo, éclat…). Réutiliser un Pods/ chaud y mélange les pods d'un autre
+    # produit (vu : flutter_facebook_auth + Flutter.xcframework 3.16.1 périmé
+    # tirés dans le link éclat → ARCHIVE FAILED). Le clean garantit un état pods
+    # propre par build. (Tenté de l'enlever pour le cache 2026-06-02 → cassé le
+    # build, re-mis. Le vrai cache Android/iOS passe par une isolation
+    # per-produit du DerivedData/Pods, pas par la suppression du clean.)
+    cocoapods(clean_install: true, podfile: "./Podfile")
 
     # MATCH_FORCE_REFRESH=true bypasses readonly + forces Match to re-sync the
     # App ID capabilities with what is in Runner.entitlements, regenerating the
