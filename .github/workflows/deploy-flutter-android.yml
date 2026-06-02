@@ -260,10 +260,30 @@ jobs:
           # → `base64 -d` brut renvoie "invalid input". On strip tout whitespace
           # avant de décoder (sans risque : le base64 valide n'en contient pas).
           printf '%s' "$ANDROID_KEYSTORE_BASE64" | tr -d '[:space:]' | base64 -d > app/upload-keystore.jks
-          # Garde-fou : un keystore JKS/PKCS12 valide fait > 1 Ko ; un décodage raté
-          # (secret vide/double-b64) donnerait un fichier minuscule → on échoue net.
-          if [ "$(wc -c < app/upload-keystore.jks)" -lt 1000 ]; then
-            echo "::error::upload-keystore.jks décodé fait $(wc -c < app/upload-keystore.jks) octets — secret ANDROID_KEYSTORE_BASE64 invalide/mal encodé"
+          # Un keystore valide commence par la magie JKS 0xFEEDFEED ou PKCS12 0x30.
+          # Certains secrets ont été encodés en DOUBLE base64 (cf. Rede
+          # kv/rede/mobile/signing) : le 1er décodage rend alors du base64 ASCII
+          # (souvent 'M' = 0x4d, base64 d'un DER) → signReleaseBundle plante avec
+          # "toDerInputStream rejects tag type 77". On re-décode une fois si la
+          # magie n'est pas binaire. Idempotent : un secret simple-b64 sort déjà
+          # en fe/30 et saute ce bloc.
+          magic=$(od -An -tx1 -N1 app/upload-keystore.jks | tr -d ' ')
+          if [ "$magic" != "fe" ] && [ "$magic" != "30" ]; then
+            if base64 -d < app/upload-keystore.jks > app/upload-keystore.jks.dec 2>/dev/null; then
+              magic2=$(od -An -tx1 -N1 app/upload-keystore.jks.dec | tr -d ' ')
+              if [ "$magic2" = "fe" ] || [ "$magic2" = "30" ]; then
+                mv app/upload-keystore.jks.dec app/upload-keystore.jks
+                echo "ℹ️  keystore double-base64 détecté → re-décodé une fois"
+              else
+                rm -f app/upload-keystore.jks.dec
+              fi
+            fi
+          fi
+          # Garde-fou final : magie keystore valide + taille > 1 Ko (un décodage
+          # raté donnerait un fichier minuscule ou une magie ASCII).
+          magic=$(od -An -tx1 -N1 app/upload-keystore.jks | tr -d ' ')
+          if { [ "$magic" != "fe" ] && [ "$magic" != "30" ]; } || [ "$(wc -c < app/upload-keystore.jks)" -lt 1000 ]; then
+            echo "::error::upload-keystore.jks invalide (magic=0x$magic, $(wc -c < app/upload-keystore.jks) octets) — secret ANDROID_KEYSTORE_BASE64 mal encodé"
             exit 1
           fi
           cat > key.properties <<KEYEOF
