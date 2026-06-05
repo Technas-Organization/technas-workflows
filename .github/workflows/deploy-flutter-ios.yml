@@ -41,6 +41,10 @@ on:
         description: "Fastlane lane to run (default: release)."
         type: string
         default: release
+      env_copy_from:
+        description: "Optional file (relative to app_dir) to copy to <app_dir>/.env before build (e.g. config/env.mobile). The app reads it at runtime via flutter_dotenv."
+        type: string
+        default: ''
       match_force_refresh:
         description: "Force Match to regenerate the provisioning profile (after an entitlement change). Bypasses readonly for one run."
         type: boolean
@@ -112,6 +116,11 @@ jobs:
           ref: ${{ inputs.workflows_ref }}
           path: .technas-workflows
           token: ${{ secrets.PACKAGES_PAT || github.token }}
+
+      - name: Copy environment file
+        if: inputs.env_copy_from != ''
+        working-directory: ${{ inputs.app_dir }}
+        run: cp "${{ inputs.env_copy_from }}" .env
 
       - name: Set Homebrew Ruby in PATH
         run: |

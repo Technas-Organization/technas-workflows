@@ -107,7 +107,7 @@ jobs:
     secrets: inherit
 ```
 
-Inputs: `app_dir`, `app_id`, `dart_defines` (+ `android_runner`, `submodules`, `workflows_ref`).
+Inputs: `app_dir`, `app_id`, `dart_defines` (+ `env_copy_from`, `android_runner`, `submodules`, `workflows_ref`).
 Secrets: optional `PACKAGES_PAT`.
 
 ### `deploy-flutter-android.yml`
@@ -127,10 +127,21 @@ jobs:
     secrets: inherit
 ```
 
-Inputs: `app_dir`, `app_id`, `track`, `dart_defines` (+ `skip_play_store`,
+Inputs: `app_dir`, `app_id`, `track`, `dart_defines` (+ `env_copy_from`, `skip_play_store`,
 `check_16kb_alignment`, `android_runner`, `submodules`, `workflows_ref`).
 Required secrets: `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`,
-`ANDROID_KEY_PASSWORD`, `ANDROID_KEY_ALIAS`, `PLAY_STORE_JSON_KEY` (+ optional `PACKAGES_PAT`).
+`ANDROID_KEY_PASSWORD`, `ANDROID_KEY_ALIAS`. The Google Play upload also needs
+`PLAY_STORE_JSON_KEY` (or `PLAY_STORE_JSON_KEY_OVERRIDE`, which wins — see below)
+unless `skip_play_store: true`. Optional `PACKAGES_PAT`.
+
+> **Multi-variant apps** (one repo shipping a second app with its own Play
+> listing — e.g. BeautyGo client + partenaire) call this reusable once per
+> variant. The second variant **cannot** use `secrets: inherit` (it must route a
+> *different* Play key), so it passes an explicit `secrets:` map with the four
+> `ANDROID_*` secrets + `PLAY_STORE_JSON_KEY_OVERRIDE: ${{ secrets.<ITS_KEY> }}`
+> (the override wins over `PLAY_STORE_JSON_KEY`). `env_copy_from` copies a file
+> (relative to `app_dir`) to `<app_dir>/.env` before the build — needed when the
+> app declares `.env` as a pubspec asset (e.g. `env_copy_from: config/env.mobile`).
 
 ### `deploy-flutter-ios.yml`
 
@@ -147,7 +158,7 @@ jobs:
 ```
 
 Inputs: `app_dir`, `app_id`, `track` (unused — TestFlight only), `fastlane_lane`,
-`match_force_refresh` (+ `macos_runner`, `submodules`, `workflows_ref`).
+`env_copy_from`, `match_force_refresh` (+ `macos_runner`, `submodules`, `workflows_ref`).
 Required secrets: `AUTH_KEY_CONTENT`, `APP_STORE_CONNECT_API_KEY_CONTENT_BASE64`,
 `APP_STORE_API_KEY_ID`, `APP_STORE_ISSUER_ID`, `APP_STORE_TEAM_ID`, `MATCH_PASSWORD`;
 optional `MATCH_GIT_URL[_GITHUB]`, `MATCH_GIT_BASIC_AUTHORIZATION[_GITHUB]`,

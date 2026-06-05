@@ -38,6 +38,10 @@ on:
         description: "Comma-separated KEY=VALUE pairs passed as --dart-define."
         type: string
         default: ''
+      env_copy_from:
+        description: "Optional file (relative to app_dir) to copy to <app_dir>/.env before build (e.g. config/env.mobile). Needed when the app declares .env as a pubspec asset."
+        type: string
+        default: ''
       android_runner:
         description: "Runner label array for the Android self-hosted runner. NEVER ubuntu-latest."
         type: string
@@ -87,6 +91,11 @@ jobs:
           ref: ${{ inputs.workflows_ref }}
           path: .technas-workflows
           token: ${{ secrets.PACKAGES_PAT || github.token }}
+
+      - name: Copy environment file
+        if: inputs.env_copy_from != ''
+        working-directory: ${{ inputs.app_dir }}
+        run: cp "${{ inputs.env_copy_from }}" .env
 
       - name: Build mobile-builder CI image
         # The Dockerfile does not COPY from the build context, so any context
