@@ -154,6 +154,11 @@ jobs:
           flutter --version
           cd "${{ inputs.app_dir }}"
           flutter clean
+          # maplibre_ios (and other SwiftPM/native-assets plugins) need Swift
+          # Package Manager enabled so the dart_build / native-assets hook can
+          # resolve a Package.resolved during archive. Idempotent + iOS-only;
+          # CocoaPods keeps working in hybrid mode for the other plugins.
+          flutter config --enable-swift-package-manager
           flutter pub get
 
       - name: Reset keychain state
