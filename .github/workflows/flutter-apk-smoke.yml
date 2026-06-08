@@ -127,12 +127,26 @@ jobs:
               define_args="$define_args --dart-define=$p"
             done
           fi
+          # tee the full build output to a workspace file (volume-mounted, so it
+          # survives on the runner host) and `set -o pipefail` so the step still
+          # fails on a build error. The self-hosted ARC runner's Actions log often
+          # fails to upload (BlobNotFound), so the artifact below is the reliable
+          # way to read gradle/flutter errors after the fact.
           docker run --rm \
             -e PUB_CACHE=/workspace/.pub-cache \
             -v "${{ github.workspace }}:/workspace" \
             -w "/workspace/${{ inputs.app_dir }}" \
             "$MOBILE_BUILDER_IMAGE" \
-            bash -lc "flutter build apk --debug $define_args"
+            bash -lc "set -o pipefail; flutter build apk --debug $define_args 2>&1 | tee /workspace/apk_build.log"
+
+      - name: Upload build log (ARC Actions logs purge — artifact is reliable)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk-build-log-${{ inputs.app_id }}
+          path: ${{ github.workspace }}/apk_build.log
+          if-no-files-found: ignore
+          retention-days: 5
 
       - name: Summary
         if: always()
