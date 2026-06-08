@@ -21,9 +21,15 @@ require 'openssl'
 module TechnasIosHelper
   def technas_update_version
     version = sh("cd ../.. && sh get_flutter_version.sh").strip.split('+')
+    # Build number = minutes since 2020-01-01 UTC. Strictly monotonic across
+    # every CI run, so no human ever has to bump the pubspec `+build` again —
+    # fixes TestFlight "bundle version must be higher than the previously
+    # uploaded version". Kept < Android's 2.1e9 versionCode cap on purpose so
+    # the Android reusable reuses the exact same scheme (--build-number).
+    build_number = ((Time.now.to_i - 1_577_836_800) / 60).to_s
     plist_path = "Runner/Info.plist"
     sh "cd .. && plutil -replace CFBundleShortVersionString -string '#{version[0]}' #{plist_path}"
-    sh "cd .. && plutil -replace CFBundleVersion -string '#{version[1].strip}' #{plist_path}"
+    sh "cd .. && plutil -replace CFBundleVersion -string '#{build_number}' #{plist_path}"
     sh('cd .. && /usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" Runner/Info.plist')
     sh('cd .. && /usr/libexec/PlistBuddy -c "Print CFBundleVersion" Runner/Info.plist')
   end

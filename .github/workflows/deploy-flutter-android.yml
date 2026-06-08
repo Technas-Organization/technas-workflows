@@ -339,7 +339,14 @@ jobs:
           # gradle_cache est actif ; on le garde sinon (comportement historique).
           VERBOSE=""
           [ "${{ inputs.build_verbose }}" = "true" ] && VERBOSE=" -v"
-          BUILD_CMD="flutter build appbundle --release$VERBOSE $define_args"
+          # Build number (versionCode) monotone = minutes depuis 2020-01-01 UTC.
+          # Toujours croissant entre chaque run CI → plus de bump manuel du
+          # pubspec, et corrige "version code N has already been used" au
+          # prochain upload Play. < cap Android 2.1e9. Même schéma que l'iOS
+          # (TechnasIosHelper#technas_update_version) pour rester cohérent.
+          BN=$(( ( $(date -u +%s) - 1577836800 ) / 60 ))
+          echo "::notice::versionCode (build number) auto = $BN (minutes depuis 2020)"
+          BUILD_CMD="flutter build appbundle --release --build-number=$BN$VERBOSE $define_args"
           if [ "${{ inputs.gradle_cache }}" != "true" ]; then
             BUILD_CMD="flutter clean && $BUILD_CMD"
           fi
