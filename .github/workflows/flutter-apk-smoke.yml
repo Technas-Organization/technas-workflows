@@ -142,6 +142,22 @@ jobs:
           cp .technas-workflows/gradle/technas-cache.init.gradle \
              "${{ github.workspace }}/.gradle/init.d/technas-cache.gradle"
           echo "::notice::Gradle remote caches ON — Nexus Maven + HttpBuildCache (init.d injected)"
+          # Constrained-ARC memory profile. The build runs in a nested docker capped
+          # by build_memory_limit on an 8 GB node. A COLD-cache build with the app's
+          # default org.gradle.workers.max=3 runs ~3 heavy compile/dex tasks at once
+          # → their combined RSS overruns the cgroup cap → the Gradle daemon is
+          # OOM-killed ("daemon disappeared unexpectedly"). Serialise execution so the
+          # peak is a SINGLE task, and trim the Kotlin daemon to leave the Gradle
+          # daemon (-Xmx3G, needed by D8/dex) room under the cap. A GRADLE_USER_HOME
+          # gradle.properties OVERRIDES the app's project gradle.properties (other
+          # keys — org.gradle.jvmargs, AndroidX, jetifier — still apply). This is a
+          # smoke, so serial (slower) is fine; deploy keeps workers.max=3 untouched.
+          {
+            echo "org.gradle.workers.max=1"
+            echo "org.gradle.parallel=false"
+            echo "kotlin.daemon.jvmargs=-Xmx640m -XX:MaxMetaspaceSize=256m"
+          } > "${{ github.workspace }}/.gradle/gradle.properties"
+          echo "::notice::Constrained-ARC Gradle profile: workers.max=1, parallel=false, Kotlin daemon 640m"
 
       - name: Copy environment file
         if: inputs.env_copy_from != ''
