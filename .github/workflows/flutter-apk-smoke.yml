@@ -235,6 +235,12 @@ jobs:
 
       - name: Upload build log (ARC Actions logs purge — artifact is reliable)
         if: always()
+        # NEVER let the diagnostic-log upload fail the smoke. The artifact is a
+        # convenience for reading gradle errors after the fact; if it can't upload
+        # (Actions storage QUOTA hit — note the quota is recalculated only every
+        # 6-12 h, so even after a cleanup it can lag — or a transient BlobNotFound),
+        # a GREEN build must stay green. Mirrors deploy-flutter-android's AAB upload.
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: apk-build-log-${{ inputs.app_id }}
