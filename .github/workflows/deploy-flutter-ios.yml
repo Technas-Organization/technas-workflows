@@ -160,6 +160,13 @@ jobs:
           # CocoaPods keeps working in hybrid mode for the other plugins.
           flutter config --enable-swift-package-manager
           flutter pub get
+          # Full iOS config pass (pods + SwiftPM integration + GeneratedPluginRegistrant)
+          # BEFORE fastlane archives. Bare `pod install` (fastlane cocoapods action)
+          # alone leaves the SPM/CocoaPods hybrid half-wired → @import of CocoaPods
+          # plugins fails at archive ("Module 'app_links' not found"). Mirrors the
+          # runner-maintenance Package.resolved gen that succeeds; no-op-safe for
+          # non-maplibre apps. LANG keeps CocoaPods off the ASCII-8BIT crash.
+          LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 flutter build ios --config-only --no-codesign
 
       - name: Reset keychain state
         run: |
