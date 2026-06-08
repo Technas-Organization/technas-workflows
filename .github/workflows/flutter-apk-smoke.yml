@@ -46,6 +46,43 @@ on:
         description: "Runner label array for the Android self-hosted runner. NEVER ubuntu-latest."
         type: string
         default: '["self-hosted", "Linux", "X64", "technas-android-build"]'
+      target_platform:
+        description: >-
+          Optional `--target-platform` for `flutter build apk` (e.g. android-arm64).
+          A smoke only needs to prove the Android build graph compiles + assembles,
+          so building a SINGLE ABI cuts the native-lib (mergeNativeLibs/strip) work
+          ~3x and the peak memory accordingly — decisive on a memory-constrained ARC
+          node. Empty (default) = fat APK (all ABIs), unchanged behaviour.
+        type: string
+        default: ''
+      build_memory_limit:
+        description: >-
+          HARD cgroup memory cap (e.g. '6g') on the inner build container. The build
+          runs in a NESTED docker whose cgroup ESCAPES the runner pod's limit, so on
+          a shared ARC node (8 GB) a runaway build fills the node → kubelet OOM →
+          NotReady ("runner lost communication"). With this set, the build container
+          OOMs cleanly (the job fails/retries) and the NODE survives. Empty (default)
+          = no cap (dedicated build machines with RAM to spare).
+        type: string
+        default: ''
+      gradle_cache:
+        description: >-
+          Enable the in-cluster remote Gradle caches (Nexus Maven proxy + remote
+          HttpBuildCache) via an injected init.gradle. On EPHEMERAL ARC runners this
+          avoids re-downloading the Jitsi AAR + androidx + plugins every run and
+          REUSES task outputs (compile/dex) for unchanged deps — which is what keeps
+          peak memory under the node ceiling. Requires an in-cluster runner
+          (ClusterIP). OFF by default — alters no existing build until enabled.
+        type: boolean
+        default: false
+      gradle_cache_nexus_url:
+        description: "Nexus Maven group URL (download proxy). In-cluster ClusterIP."
+        type: string
+        default: 'http://nexus.technas-infra.svc.cluster.local:8081/repository/maven-public/'
+      gradle_cache_remote_url:
+        description: "Remote Gradle build-cache URL (task outputs). In-cluster ClusterIP."
+        type: string
+        default: 'http://gradle-build-cache.technas-infra.svc.cluster.local:5071/cache/'
       submodules:
         type: string
         default: 'false'
@@ -92,6 +129,20 @@ jobs:
           path: .technas-workflows
           token: ${{ secrets.PACKAGES_PAT || github.token }}
 
+      # Remote Gradle caches (gated by gradle_cache). Drop the shared init script
+      # into the build's GRADLE_USER_HOME (=/workspace/.gradle in the container):
+      # Gradle auto-applies any init.d/*.gradle. The Nexus + build-cache URLs are
+      # passed to the container as env vars (cf. Build step). Mirrors the proven
+      # deploy-flutter-android reusable.
+      - name: Install Gradle cache init script
+        if: inputs.gradle_cache
+        run: |
+          set -euo pipefail
+          mkdir -p "${{ github.workspace }}/.gradle/init.d"
+          cp .technas-workflows/gradle/technas-cache.init.gradle \
+             "${{ github.workspace }}/.gradle/init.d/technas-cache.gradle"
+          echo "::notice::Gradle remote caches ON — Nexus Maven + HttpBuildCache (init.d injected)"
+
       - name: Copy environment file
         if: inputs.env_copy_from != ''
         working-directory: ${{ inputs.app_dir }}
@@ -127,17 +178,44 @@ jobs:
               define_args="$define_args --dart-define=$p"
             done
           fi
+          # Single-ABI smoke (gated by target_platform) — proves the build graph
+          # compiles + assembles while cutting the native-lib work ~3x.
+          abi_flag=""
+          if [ -n "${{ inputs.target_platform }}" ]; then
+            abi_flag="--target-platform ${{ inputs.target_platform }}"
+            echo "::notice::APK smoke restricted to ABI ${{ inputs.target_platform }} (lighter build)"
+          fi
+          # HARD cgroup cap on the NESTED build container: its cgroup escapes the
+          # runner pod limit, so without this a runaway build fills an 8 GB ARC node
+          # → kubelet OOM → NotReady ("runner lost communication"). With it, the
+          # build OOMs cleanly (job fails, node survives). Empty = no cap.
+          MEM_FLAG=""
+          if [ -n "${{ inputs.build_memory_limit }}" ]; then
+            MEM_FLAG="--memory=${{ inputs.build_memory_limit }} --memory-swap=${{ inputs.build_memory_limit }}"
+            echo "::notice::Build capped at ${{ inputs.build_memory_limit }} (cgroup, ARC node safety)"
+          fi
+          # Remote Gradle caches (gated). --network host : the nested build's
+          # resolv.conf has no coredns → without host net it can't resolve
+          # *.svc.cluster.local nor reach the Nexus/build-cache ClusterIPs.
+          # GRADLE_USER_HOME points at /workspace/.gradle where init.d was dropped.
+          CACHE_FLAGS=""
+          if [ "${{ inputs.gradle_cache }}" = "true" ]; then
+            CACHE_FLAGS="--network host \
+              -e GRADLE_USER_HOME=/workspace/.gradle \
+              -e NEXUS_MAVEN_URL=${{ inputs.gradle_cache_nexus_url }} \
+              -e GRADLE_REMOTE_CACHE_URL=${{ inputs.gradle_cache_remote_url }}"
+          fi
           # tee the full build output to a workspace file (volume-mounted, so it
           # survives on the runner host) and `set -o pipefail` so the step still
           # fails on a build error. The self-hosted ARC runner's Actions log often
           # fails to upload (BlobNotFound), so the artifact below is the reliable
           # way to read gradle/flutter errors after the fact.
-          docker run --rm \
+          docker run --rm $MEM_FLAG $CACHE_FLAGS \
             -e PUB_CACHE=/workspace/.pub-cache \
             -v "${{ github.workspace }}:/workspace" \
             -w "/workspace/${{ inputs.app_dir }}" \
             "$MOBILE_BUILDER_IMAGE" \
-            bash -lc "set -o pipefail; flutter build apk --debug $define_args 2>&1 | tee /workspace/apk_build.log"
+            bash -lc "set -o pipefail; flutter build apk --debug $abi_flag $define_args 2>&1 | tee /workspace/apk_build.log"
 
       - name: Upload build log (ARC Actions logs purge — artifact is reliable)
         if: always()
