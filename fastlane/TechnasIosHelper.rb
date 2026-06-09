@@ -117,7 +117,7 @@ module TechnasIosHelper
         contact_email: (ENV["APP_STORE_CONTACT_EMAIL"].to_s.strip.empty? ? "contact@technas.fr" : ENV["APP_STORE_CONTACT_EMAIL"].to_s.strip),
         contact_first_name: (ENV["APP_STORE_CONTACT_FIRST_NAME"].to_s.strip.empty? ? app_name : ENV["APP_STORE_CONTACT_FIRST_NAME"].to_s.strip),
         contact_last_name: (ENV["APP_STORE_CONTACT_LAST_NAME"].to_s.strip.empty? ? "Team" : ENV["APP_STORE_CONTACT_LAST_NAME"].to_s.strip),
-        contact_phone: (ENV["APP_STORE_CONTACT_PHONE"].to_s.strip.empty? ? "+33 603740256" : ENV["APP_STORE_CONTACT_PHONE"].to_s.strip),
+        contact_phone: (ENV["APP_STORE_CONTACT_PHONE"].to_s.strip.empty? ? "+33 422490105" : ENV["APP_STORE_CONTACT_PHONE"].to_s.strip),
         notes: (ENV["APP_STORE_REVIEW_NOTES"].to_s.strip.empty? ? "Build automatique pour #{app_name}" : ENV["APP_STORE_REVIEW_NOTES"].to_s.strip)
       },
       team_id: ENV["APP_STORE_TEAM_ID"]
