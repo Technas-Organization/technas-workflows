@@ -52,7 +52,7 @@ jobs:
   push:
     # ARC self-hosted runner — never ubuntu-latest (org Free plan has 0
     # GitHub-hosted minutes, jobs die instantly on a billing error).
-    runs-on: technas-backend-build
+    runs-on: technas-backend-light
     if: github.actor != inputs.bot-actor
     env:
       POEDITOR_API_TOKEN: ${{ secrets.POEDITOR_API_TOKEN }}
