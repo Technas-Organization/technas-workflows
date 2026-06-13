@@ -182,7 +182,18 @@ jobs:
               define_args+=(--dart-define="$p")
             done
           fi
-          flutter build web --release --pwa-strategy none "${define_args[@]}"
+          # --build-number ties the compiled PackageInfo.buildNumber to the CI
+          # run number, so the in-app update banner can detect a newer deploy
+          # (an old browser tab's build_number < the newly-deployed one).
+          flutter build web --release --pwa-strategy none \
+            --build-number "${GITHUB_RUN_NUMBER:-0}" "${define_args[@]}"
+          # Sync version.json (served at /version.json, polled by the banner) to
+          # the same build_number. Flutter writes this file; rewrite the field.
+          # No-op for products whose Dockerfile later overwrites version.json.
+          ver="build/web/version.json"
+          if [ -f "$ver" ]; then
+            sed -i -E "s/\"build_number\"[[:space:]]*:[[:space:]]*\"[^\"]*\"/\"build_number\":\"${GITHUB_RUN_NUMBER:-0}\"/" "$ver" || true
+          fi
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
