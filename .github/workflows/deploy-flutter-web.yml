@@ -158,7 +158,22 @@ jobs:
 
       - name: Flutter pub get
         working-directory: ${{ inputs.app_dir }}
-        run: flutter pub get
+        # Résilience pub.dev : pub.dev throttle parfois les IP des runners CI (renvoie
+        # 401/403 → « authorization failed / Insufficient permissions » à la résolution,
+        # alors que pub.dev répond 200 ailleurs). Le pub-cache restauré rend les
+        # tentatives répétées peu coûteuses ; une fenêtre non throttlée suffit.
+        # Échec dur après N essais. Sémantique inchangée (même résolution online).
+        run: |
+          n=0
+          until flutter pub get; do
+            n=$((n + 1))
+            if [ "$n" -ge 6 ]; then
+              echo "::error::flutter pub get a échoué après $n tentatives (throttle pub.dev ?)"
+              exit 1
+            fi
+            echo "flutter pub get a échoué (tentative $n/6) — nouvel essai dans 20s…"
+            sleep 20
+          done
 
       - name: Pre-build script
         if: inputs.pre_build_script != ''
