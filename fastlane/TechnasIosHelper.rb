@@ -19,7 +19,7 @@ require 'base64'
 require 'openssl'
 
 module TechnasIosHelper
-  def technas_update_version
+  def technas_update_version(extra_plists: [])
     version = sh("cd ../.. && sh get_flutter_version.sh").strip.split('+')
     # Build number = minutes since 2020-01-01 UTC. Strictly monotonic across
     # every CI run, so no human ever has to bump the pubspec `+build` again —
@@ -27,15 +27,25 @@ module TechnasIosHelper
     # uploaded version". Kept < Android's 2.1e9 versionCode cap on purpose so
     # the Android reusable reuses the exact same scheme (--build-number).
     build_number = ((Time.now.to_i - 1_577_836_800) / 60).to_s
-    plist_path = "Runner/Info.plist"
-    sh "cd .. && plutil -replace CFBundleShortVersionString -string '#{version[0]}' #{plist_path}"
-    sh "cd .. && plutil -replace CFBundleVersion -string '#{build_number}' #{plist_path}"
-    sh('cd .. && /usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" Runner/Info.plist')
-    sh('cd .. && /usr/libexec/PlistBuddy -c "Print CFBundleVersion" Runner/Info.plist')
+    # App extensions (extra_plists) MUST carry the same CFBundleShortVersionString
+    # and CFBundleVersion as the containing app or App Store validation rejects
+    # the build (e.g. the ImageNotification notification-service extension).
+    (["Runner/Info.plist"] + extra_plists).each do |plist_path|
+      sh "cd .. && plutil -replace CFBundleShortVersionString -string '#{version[0]}' #{plist_path}"
+      sh "cd .. && plutil -replace CFBundleVersion -string '#{build_number}' #{plist_path}"
+      sh(%(cd .. && /usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" #{plist_path}))
+      sh(%(cd .. && /usr/libexec/PlistBuddy -c "Print CFBundleVersion" #{plist_path}))
+    end
   end
 
-  def technas_release_ios(app_identifier:, app_name: 'App', match_readonly: true, skip_waiting: true)
-    technas_update_version
+  # extensions: optional list of embedded app-extension targets, e.g.
+  #   [{ identifier: 'fr.technas.beautygo.app.ImageNotification', target: 'ImageNotification' }]
+  # Each gets: version stamped in <target>/Info.plist, its own Match appstore
+  # profile fetched + wired on its Xcode target, and an explicit entry in the
+  # export provisioningProfiles mapping. Default [] keeps single-target apps
+  # (éclat, …) on the exact previous behaviour.
+  def technas_release_ios(app_identifier:, app_name: 'App', match_readonly: true, skip_waiting: true, extensions: [])
+    technas_update_version(extra_plists: extensions.map { |e| "#{e[:target]}/Info.plist" })
     setup_ci(force: true)
 
     api_key = app_store_connect_api_key(
@@ -62,6 +72,7 @@ module TechnasIosHelper
     # Domains for Universal Links) — leave it off in steady state to avoid
     # rotating profiles on every release.
     force_refresh = ENV["MATCH_FORCE_REFRESH"].to_s.downcase == "true"
+    all_identifiers = ([app_identifier] + extensions.map { |e| e[:identifier] }).flatten
     match(
       type: "appstore",
       readonly: force_refresh ? false : match_readonly,
@@ -69,7 +80,7 @@ module TechnasIosHelper
       force_for_new_devices: force_refresh,
       api_key: api_key,
       git_url: ENV["MATCH_GIT_URL"],
-      app_identifier: [app_identifier].flatten
+      app_identifier: all_identifiers
     )
 
     team_id = ENV["sigh_#{app_identifier}_appstore_team-id"]
@@ -78,36 +89,45 @@ module TechnasIosHelper
     sh("security list-keychains -d user -s '#{keychain_path}'")
     sh("security default-keychain -s '#{keychain_path}'")
 
-    profile_path = ENV["sigh_#{app_identifier}_appstore_profile-path"]
-    profile_name = ENV["sigh_#{app_identifier}_appstore_profile-name"]
+    signable_targets = [{ identifier: app_identifier, target: "Runner" }] + extensions
+    export_profiles = {}
+    signable_targets.each do |t|
+      profile_path = ENV["sigh_#{t[:identifier]}_appstore_profile-path"]
+      profile_name = ENV["sigh_#{t[:identifier]}_appstore_profile-name"]
 
-    if profile_path
-      update_project_provisioning(
-        xcodeproj: "Runner.xcodeproj",
-        profile: profile_path,
-        target_filter: "Runner",
-        build_configuration: "Release"
-      )
+      if profile_path
+        update_project_provisioning(
+          xcodeproj: "Runner.xcodeproj",
+          profile: profile_path,
+          target_filter: t[:target],
+          build_configuration: "Release"
+        )
+      end
+
+      if profile_name
+        update_code_signing_settings(
+          use_automatic_signing: false,
+          path: "Runner.xcodeproj",
+          team_id: team_id,
+          profile_name: profile_name,
+          code_sign_identity: "Apple Distribution",
+          targets: [t[:target]]
+        )
+        export_profiles[t[:identifier]] = profile_name
+      end
     end
 
-    if profile_name
-      update_code_signing_settings(
-        use_automatic_signing: false,
-        path: "Runner.xcodeproj",
-        team_id: team_id,
-        profile_name: profile_name,
-        code_sign_identity: "Apple Distribution",
-        targets: ["Runner"]
-      )
-    end
-
-    build_app(
+    build_options = {
       workspace: "Runner.xcworkspace",
       scheme: "Runner",
       export_method: "app-store",
       disable_xcpretty: true,
       xcargs: "DEVELOPMENT_TEAM=#{team_id} OTHER_CODE_SIGN_FLAGS='--keychain #{keychain_path}'"
-    )
+    }
+    # Explicit mapping: with an embedded extension, gym's auto-detection must
+    # not guess — each bundle id exports with its own Match appstore profile.
+    build_options[:export_options] = { provisioningProfiles: export_profiles } unless export_profiles.empty?
+    build_app(**build_options)
 
     upload_to_testflight(
       api_key: api_key,
