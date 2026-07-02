@@ -6,8 +6,12 @@
 # never depend on a private registry tag for the mobile builder.
 #
 # Pin: use a tag that exists on ghcr.io/cirruslabs/flutter (see package versions).
-# `stable` tracks Flutter stable channel — reliable pulls in CI; lock a semver tag for reproducibility.
-FROM ghcr.io/cirruslabs/flutter:stable
+# 2026-07-02 — `stable` a cassé les builds : l'image Flutter 3.44.0 fraîche
+# livre le SDK en channel [user-branch] / « Upstream repository unknown
+# source » → `flutter doctor -v` sort en erreur (exit 69). Règle maison :
+# tag IMMUABLE, jamais de tag mouvant. 3.38.5 = la version qui buildait
+# vert (tag vérifié présent sur ghcr). Pour monter : bumper explicitement.
+FROM ghcr.io/cirruslabs/flutter:3.38.5
 
 USER root
 # Flutter invokes git against /sdks/flutter; when the container runs as a non-root
