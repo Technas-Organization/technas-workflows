@@ -170,14 +170,26 @@ jobs:
             LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 \
               flutter build ios --config-only --no-codesign
           }
-          # Self-heal the persistent-runner SwiftPM cache. On a self-hosted Mac
-          # the SPM caches survive between runs; a stale/corrupt one makes
-          # xcodebuild resolution fail with "no versions of 'firebase-ios-sdk'
-          # match the requirement …" even though Package.resolved pins a valid
-          # version. Retry once after wiping ONLY the caches — never
-          # Package.resolved (that pin is what we want to honour).
-          if ! ios_config_pass; then
-            echo "::warning::iOS config pass failed — wiping stale SwiftPM caches and retrying once"
+          # Self-heal flaky SwiftPM resolution on the persistent Mac runner.
+          # xcodebuild intermittently fails with "no versions of
+          # 'firebase-ios-sdk' match the requirement 11.15.0..<12.0.0" even
+          # though Package.resolved pins a valid version — SPM got a truncated
+          # tag list (GitHub rate-limit on the huge firebase repo, esp. when the
+          # two BeautyGo apps resolve back-to-back on the same runner).
+          #   1) Retry with backoff, KEEPING the warm SPM cache — a prior
+          #      successful resolve (e.g. the client app) already fetched the
+          #      full firebase tag list, so the retry resolves from cache and
+          #      the rate-limit window passes.
+          #   2) Only as a LAST resort wipe the caches (never Package.resolved —
+          #      that pin is honoured) and try once more.
+          ok=false
+          for attempt in 1 2 3; do
+            if ios_config_pass; then ok=true; break; fi
+            echo "::warning::iOS config pass attempt $attempt failed — backing off, warm SPM cache preserved"
+            sleep $((attempt * 20))
+          done
+          if [ "$ok" != "true" ]; then
+            echo "::warning::retries exhausted — wiping SwiftPM caches as last resort and trying once more"
             rm -rf "$HOME/Library/Caches/org.swift.swiftpm" 2>/dev/null || true
             rm -rf "$HOME"/Library/Developer/Xcode/DerivedData/*/SourcePackages 2>/dev/null || true
             flutter pub get
