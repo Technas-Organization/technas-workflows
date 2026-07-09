@@ -166,7 +166,23 @@ jobs:
           # plugins fails at archive ("Module 'app_links' not found"). Mirrors the
           # runner-maintenance Package.resolved gen that succeeds; no-op-safe for
           # non-maplibre apps. LANG keeps CocoaPods off the ASCII-8BIT crash.
-          LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 flutter build ios --config-only --no-codesign
+          ios_config_pass() {
+            LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 \
+              flutter build ios --config-only --no-codesign
+          }
+          # Self-heal the persistent-runner SwiftPM cache. On a self-hosted Mac
+          # the SPM caches survive between runs; a stale/corrupt one makes
+          # xcodebuild resolution fail with "no versions of 'firebase-ios-sdk'
+          # match the requirement …" even though Package.resolved pins a valid
+          # version. Retry once after wiping ONLY the caches — never
+          # Package.resolved (that pin is what we want to honour).
+          if ! ios_config_pass; then
+            echo "::warning::iOS config pass failed — wiping stale SwiftPM caches and retrying once"
+            rm -rf "$HOME/Library/Caches/org.swift.swiftpm" 2>/dev/null || true
+            rm -rf "$HOME"/Library/Developer/Xcode/DerivedData/*/SourcePackages 2>/dev/null || true
+            flutter pub get
+            ios_config_pass
+          fi
 
       - name: Reset keychain state
         run: |
