@@ -195,6 +195,15 @@ jobs:
         working-directory: ${{ inputs.app_dir }}
         env:
           DART_DEFINES: ${{ inputs.dart_defines }}
+          # Plafonne le tas old-gen de la VM Dart (dart2js) : sur les runners
+          # ARC la limite cgroup est 6Gi (sûreté nœud burst 8 Go — NE PAS la
+          # monter) ; sans plafond, la compile du plus gros bundle (BeautyGo
+          # client, ~11 Mo de JS) a fini par dépasser et le runner était tué
+          # en plein « Build web », sans conclusion ni log (3× le 2026-07-17).
+          # À 4 Go de tas, dart2js fait du GC (build un peu plus lent) au lieu
+          # d'exploser le cgroup ; s'il ne tient VRAIMENT pas, il échoue avec
+          # une OOM Dart PROPRE et visible dans le log.
+          DART_VM_OPTIONS: --old_gen_heap_size=4096
         run: |
           set -e
           define_args=()
