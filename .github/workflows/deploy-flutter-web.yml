@@ -218,7 +218,30 @@ jobs:
           # --build-number ties the compiled PackageInfo.buildNumber to the CI
           # run number, so the in-app update banner can detect a newer deploy
           # (an old browser tab's build_number < the newly-deployed one).
-          flutter build web --release --pwa-strategy none \
+          # --no-wasm-dry-run : Flutter compile EN PLUS une passe WebAssembly
+          # à blanc, uniquement pour émettre des avertissements de compatibilité
+          # — alors qu'aucun produit Technas ne cible le wasm (personne ne passe
+          # `--wasm`). La sortie JS est rigoureusement IDENTIQUE ; seuls les
+          # avertissements disparaissent.
+          #
+          # Ce n'est pas une micro-optimisation. Mesuré sur BeautyGoApp
+          # (2026-08-08, même machine, build à froid) :
+          #     avec le dry-run : 3,75 Gio de pic, 89 s
+          #     sans            : 1,86 Gio de pic, 52 s
+          # soit 1,89 Gio et 37 s économisés.
+          #
+          # Ces 1,9 Gio décidaient du succès du déploiement : le conteneur runner
+          # consommait 5,78-5,93 Gio pour 5 Gi réservés, donc le kubelet
+          # l'évinçait dès qu'un nœud passait sous pression — et le job mourait
+          # SANS log ni détail d'étape, ce qui ressemble à une erreur de code
+          # alors que l'app compile parfaitement en local. Deux déploiements
+          # BeautyGo perdus la nuit du 07 au 08/08 pour cette seule raison.
+          # (Agrandir le runner a été essayé et annulé : à 6500Mi il devient
+          # NON PLANIFIABLE — le cluster est à 92 % sur les gros nœuds.)
+          #
+          # Si un produit veut un jour ces avertissements, en faire un input
+          # plutôt que de retirer le drapeau ici.
+          flutter build web --release --pwa-strategy none --no-wasm-dry-run \
             --build-number "${GITHUB_RUN_NUMBER:-0}" "${define_args[@]}"
           # Sync version.json (served at /version.json, polled by the banner) to
           # the same build_number. Flutter writes this file; rewrite the field.
