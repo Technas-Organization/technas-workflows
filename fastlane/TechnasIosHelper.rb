@@ -44,7 +44,10 @@ module TechnasIosHelper
   # profile fetched + wired on its Xcode target, and an explicit entry in the
   # export provisioningProfiles mapping. Default [] keeps single-target apps
   # (éclat, …) on the exact previous behaviour.
-  def technas_release_ios(app_identifier:, app_name: 'App', match_readonly: true, skip_waiting: true, extensions: [])
+  # upload: false construit et signe SANS publier sur TestFlight — sert aux
+  # vérifications de chaîne CI (lane `build_only`) qui ne doivent rien diffuser
+  # aux testeurs. Défaut true : comportement inchangé pour tous les produits.
+  def technas_release_ios(app_identifier:, app_name: 'App', match_readonly: true, skip_waiting: true, extensions: [], upload: true)
     technas_update_version(extra_plists: extensions.map { |e| "#{e[:target]}/Info.plist" })
     setup_ci(force: true)
 
@@ -128,6 +131,11 @@ module TechnasIosHelper
     # not guess — each bundle id exports with its own Match appstore profile.
     build_options[:export_options] = { provisioningProfiles: export_profiles } unless export_profiles.empty?
     build_app(**build_options)
+
+    unless upload
+      UI.important("upload: false — build signé, publication TestFlight sautée.")
+      return
+    end
 
     upload_to_testflight(
       api_key: api_key,
