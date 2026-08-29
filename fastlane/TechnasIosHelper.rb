@@ -133,7 +133,10 @@ module TechnasIosHelper
     build_app(**build_options)
 
     unless upload
-      UI.important("upload: false — build signé, publication TestFlight sautée.")
+      # `FastlaneCore::UI` qualifié, jamais `UI` nu : la constante est résolue
+      # lexicalement en `TechnasIosHelper::UI` → NameError. Même piège que dans
+      # TechnasAndroidHelper, où il est documenté depuis longtemps.
+      FastlaneCore::UI.important("upload: false — build signé, publication TestFlight sautée.")
       return
     end
 
