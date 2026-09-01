@@ -41,6 +41,10 @@ on:
         description: "Fastlane lane to run (default: release)."
         type: string
         default: release
+      dart_defines:
+        description: "Comma-separated KEY=VALUE pairs passed as --dart-define. Same contract as deploy-flutter-android.yml."
+        type: string
+        default: ''
       env_copy_from:
         description: "Optional file (relative to app_dir) to copy to <app_dir>/.env before build (e.g. config/env.mobile). The app reads it at runtime via flutter_dotenv."
         type: string
@@ -149,6 +153,8 @@ jobs:
           which pod
 
       - name: Flutter setup
+        env:
+          DART_DEFINES: ${{ inputs.dart_defines }}
         run: |
           source "$HOME/.cargo/env" 2>/dev/null || true
           flutter --version
@@ -166,9 +172,28 @@ jobs:
           # plugins fails at archive ("Module 'app_links' not found"). Mirrors the
           # runner-maintenance Package.resolved gen that succeeds; no-op-safe for
           # non-maplibre apps. LANG keeps CocoaPods off the ASCII-8BIT crash.
+          # 🔴 C'EST ICI que les --dart-define entrent dans un build iOS, et
+          # nulle part ailleurs. `flutter build ios --config-only` écrit
+          # `ios/Flutter/Generated.xcconfig` avec la ligne `DART_DEFINES=` que
+          # la phase de script Xcode relit à l'archive ; fastlane `build_app`
+          # ne fait qu'un `xcodebuild archive` et n'a aucun moyen de les poser.
+          # Sans cette boucle, l'entrée `dart_defines` existerait dans la
+          # signature du workflow et serait AVALÉE en silence : l'appelant la
+          # renseignerait, le build passerait au vert, et
+          # `String.fromEnvironment` rendrait la chaîne vide à l'exécution.
+          define_args=""
+          if [ -n "$DART_DEFINES" ]; then
+            IFS=',' read -ra pairs <<< "$DART_DEFINES"
+            for p in "${pairs[@]}"; do
+              p="$(echo -n "$p" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+              [ -z "$p" ] && continue
+              define_args="$define_args --dart-define=$p"
+            done
+            echo "::notice::dart-defines iOS : ${#pairs[@]} paire(s)"
+          fi
           ios_config_pass() {
             LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 \
-              flutter build ios --config-only --no-codesign
+              flutter build ios --config-only --no-codesign $define_args
           }
           # Self-heal flaky SwiftPM resolution on the persistent Mac runner.
           # xcodebuild intermittently fails with "no versions of
