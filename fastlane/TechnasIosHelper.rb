@@ -90,7 +90,8 @@ module TechnasIosHelper
   # Aucun build ici : la lane fabrique et publie des profils dans le dépôt
   # Match, puis les installe sur la machine qui l'exécute. Elle est faite pour
   # tourner sur le Mac auquel l'iPhone est appairé.
-  def technas_development_profiles(app_identifier:, extensions: [], readonly: false)
+  def technas_development_profiles(app_identifier:, extensions: [], readonly: false,
+                                   cabler_le_projet: false)
     setup_ci(force: true) unless ENV["TECHNAS_MATCH_LOCAL"].to_s.downcase == "true"
 
     api_key = technas_cle_app_store_connect
@@ -109,6 +110,46 @@ module TechnasIosHelper
       git_url: ENV["MATCH_GIT_URL"],
       app_identifier: ([app_identifier] + extensions.map { |e| e[:identifier] }).flatten
     )
+
+    technas_cabler_signature_debug(app_identifier: app_identifier, extensions: extensions) if cabler_le_projet
+  end
+
+  # Écrit la signature MANUELLE de la configuration Debug sur les profils Match.
+  #
+  # 🔴 07/09/2026 — SANS ÇA, INSTALLER LES PROFILS NE SUFFIT PAS, ET LE MESSAGE
+  # D'ERREUR DÉSIGNE LA MAUVAISE CAUSE.
+  #
+  # Le projet est en `CODE_SIGN_STYLE = Automatic`. Xcode y choisit alors
+  # **l'identité la plus récente du chemin de trousseaux** et la confronte au
+  # profil QU'IL gère lui-même — lequel porte l'ancien certificat :
+  #
+  #   Provisioning profile "iOS Team Provisioning Profile: …" doesn't include
+  #   signing certificate "Apple Development: Created via API (…)".
+  #
+  # Autrement dit : plus le certificat Match est correctement installé, plus la
+  # signature automatique casse. Les deux rails ne cohabitent pas.
+  #
+  # Laisser Xcode gagner n'est pas une option sur un Mac piloté en SSH : la clé
+  # privée de SON certificat vit dans `login.keychain`, que la session SSH ne
+  # peut ni ouvrir ni faire déverrouiller (aucune invite ne peut s'afficher).
+  # `codesign` échoue en « Command CodeSign failed », sans jamais nommer le
+  # trousseau. Le seul chemin qui tienne est donc : certificat Match dans un
+  # trousseau à soi, déverrouillé, ET signature manuelle sur SES profils.
+  #
+  # Debug seulement : la configuration Release reste au rail `appstore` de
+  # `technas_release_ios`, qui la réécrit à chaque build de toute façon.
+  def technas_cabler_signature_debug(app_identifier:, extensions: [])
+    ([{ identifier: app_identifier, target: "Runner" }] + extensions).each do |cible|
+      update_code_signing_settings(
+        path: "Runner.xcodeproj",
+        targets: [cible[:target]],
+        build_configurations: ["Debug"],
+        use_automatic_signing: false,
+        team_id: ENV["APP_STORE_TEAM_ID"],
+        code_sign_identity: "Apple Development",
+        profile_name: "match Development #{cible[:identifier]}"
+      )
+    end
   end
 
   # extensions: optional list of embedded app-extension targets, e.g.
