@@ -16,6 +16,7 @@
 # above ios/) — used by technas_update_version to stamp the build number.
 
 require 'base64'
+require 'json'
 require 'openssl'
 
 module TechnasIosHelper
@@ -38,6 +39,78 @@ module TechnasIosHelper
     end
   end
 
+  # Clé App Store Connect — construite à l'IDENTIQUE par toutes les lanes qui
+  # parlent à Apple (release, build_only, development). Extraite ici à la 2e
+  # utilisation : dupliquer les 5 ENV c'est se garantir qu'un jour l'une des
+  # copies aura un nom de variable en retard sur l'autre.
+  def technas_cle_app_store_connect
+    app_store_connect_api_key(
+      key_id: ENV["APP_STORE_API_KEY_ID"],
+      issuer_id: ENV["APP_STORE_ISSUER_ID"],
+      key_filepath: ENV["APP_STORE_KEY_FILEPATH"],
+      duration: 1200,
+      in_house: false
+    )
+  end
+
+  # Appareils de test d'un produit, lus depuis <app>/ios/fastlane/appareils_de_test.json
+  # ({"iPhone de X": "<UDID>"}). Le fichier est VERSIONNÉ : ajouter un iPhone
+  # est un commit, pas une manipulation manuelle dans le portail Apple qu'aucune
+  # trace ne rattrape. Absent ou vide => aucun enregistrement, pas une erreur
+  # (les produits mono-machine n'en ont pas besoin).
+  def technas_appareils_de_test
+    # Une lane s'exécute avec Dir.pwd = <app>/ios/fastlane (c'est pourquoi le
+    # reste du helper fait `cd ..`). Le fichier est donc à côté du Fastfile.
+    chemin = File.join(Dir.pwd, 'appareils_de_test.json')
+    return {} unless File.exist?(chemin)
+
+    appareils = JSON.parse(File.read(chemin))
+    appareils.each do |nom, udid|
+      # Un UDID mal formé est refusé par Apple avec un message qui ne désigne
+      # PAS le fichier fautif. On échoue ici, en nommant l'entrée.
+      next if udid =~ /\A[0-9A-Fa-f]{40}\z/ || udid =~ /\A[0-9]{8}-[0-9A-Fa-f]{16}\z/
+
+      FastlaneCore::UI.user_error!("appareils_de_test.json : UDID invalide pour « #{nom} » (#{udid}). " \
+                                   "Attendu 40 hexa (avant iPhone XS) ou 8 chiffres + '-' + 16 hexa.")
+    end
+    appareils
+  end
+
+  # Profils de DÉVELOPPEMENT — le chemin `flutter run` sur un iPhone PHYSIQUE.
+  #
+  # 🔴 Pourquoi une lane séparée et pas une option de `release` : les deux ne
+  # signent pas la même chose. `release` produit un profil `appstore`, qui ne
+  # contient AUCUN appareil et ne peut donc pas lancer l'app sur un iPhone
+  # branché — c'est exactement ce qui manquait le 07/09/2026 (identité de
+  # développement présente, 0 profil installé). Un profil `development` porte
+  # la liste des appareils enregistrés ; il faut donc enregistrer AVANT de
+  # (re)générer, et `force_for_new_devices` sans `register_devices` régénère un
+  # profil identique, sans le nouvel iPhone.
+  #
+  # Aucun build ici : la lane fabrique et publie des profils dans le dépôt
+  # Match, puis les installe sur la machine qui l'exécute. Elle est faite pour
+  # tourner sur le Mac auquel l'iPhone est appairé.
+  def technas_development_profiles(app_identifier:, extensions: [], readonly: false)
+    setup_ci(force: true) unless ENV["TECHNAS_MATCH_LOCAL"].to_s.downcase == "true"
+
+    api_key = technas_cle_app_store_connect
+    appareils = technas_appareils_de_test
+
+    # readonly: aucune écriture chez Apple ni dans le dépôt Match — on ne fait
+    # qu'installer les profils existants. C'est le mode d'un poste qui veut
+    # juste lancer l'app ; l'enregistrement d'appareil n'y a pas sa place.
+    register_devices(devices: appareils, api_key: api_key) if !readonly && !appareils.empty?
+
+    match(
+      type: "development",
+      readonly: readonly,
+      force_for_new_devices: !readonly,
+      api_key: api_key,
+      git_url: ENV["MATCH_GIT_URL"],
+      app_identifier: ([app_identifier] + extensions.map { |e| e[:identifier] }).flatten
+    )
+  end
+
   # extensions: optional list of embedded app-extension targets, e.g.
   #   [{ identifier: 'fr.technas.beautygo.app.ImageNotification', target: 'ImageNotification' }]
   # Each gets: version stamped in <target>/Info.plist, its own Match appstore
@@ -51,13 +124,7 @@ module TechnasIosHelper
     technas_update_version(extra_plists: extensions.map { |e| "#{e[:target]}/Info.plist" })
     setup_ci(force: true)
 
-    api_key = app_store_connect_api_key(
-      key_id: ENV["APP_STORE_API_KEY_ID"],
-      issuer_id: ENV["APP_STORE_ISSUER_ID"],
-      key_filepath: ENV["APP_STORE_KEY_FILEPATH"],
-      duration: 1200,
-      in_house: false
-    )
+    api_key = technas_cle_app_store_connect
 
     # clean install REQUIS : les runners Mac sont PARTAGÉS entre produits
     # (BeautyGo, éclat…). Réutiliser un Pods/ chaud y mélange les pods d'un autre
