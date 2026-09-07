@@ -197,7 +197,24 @@ module TechnasIosHelper
     team_id = ENV["sigh_#{app_identifier}_appstore_team-id"]
     keychain_path = "#{ENV['HOME']}/Library/Keychains/fastlane_tmp_keychain-db"
 
-    sh("security list-keychains -d user -s '#{keychain_path}'")
+    # 🔴 08/09/2026 — `security list-keychains -d user -s` REMPLACE la liste
+    # entière. Cette ligne la réduisait au seul trousseau jetable de Fastlane :
+    # `login.keychain` en sortait, Xcode perdait l'accès à ses identifiants, et
+    # le compte Apple enregistré dans Xcode a fini par disparaître du Mac
+    # (`IDEAccountFrameworkStore` absent). Sur un runner jetable c'est sans
+    # conséquence ; sur une machine de travail, ça coûte le compte.
+    #
+    # On AJOUTE donc, et on restaure l'état d'origine quoi qu'il arrive.
+    liste_dorigine = `security list-keychains -d user`.scan(/"([^"]+)"/).flatten
+    defaut_dorigine = `security default-keychain -d user`[/"([^"]+)"/, 1]
+    restaurer_les_trousseaux = lambda do
+      unless liste_dorigine.empty?
+        sh("security list-keychains -d user -s #{liste_dorigine.map { |k| "'#{k}'" }.join(' ')}")
+      end
+      sh("security default-keychain -s '#{defaut_dorigine}'") if defaut_dorigine
+    end
+
+    sh("security list-keychains -d user -s #{(liste_dorigine + [keychain_path]).uniq.map { |k| "'#{k}'" }.join(' ')}")
     sh("security default-keychain -s '#{keychain_path}'")
 
     signable_targets = [{ identifier: app_identifier, target: "Runner" }] + extensions
@@ -261,5 +278,16 @@ module TechnasIosHelper
       },
       team_id: ENV["APP_STORE_TEAM_ID"]
     )
+  ensure
+    # 🔴 Restaurer la liste de trousseaux QUOI QU'IL ARRIVE — y compris sur le
+    # `return` anticipé d'`upload: false` et sur une exception de `build_app`.
+    # Sans ça la machine reste avec le seul trousseau jetable dans sa liste de
+    # recherche : Xcode perd l'accès à ses identifiants, et le compte Apple
+    # enregistré finit par disparaître du Mac (constaté le 08/09/2026 —
+    # `IDEAccountFrameworkStore` vidé, « No Accounts » à chaque build).
+    #
+    # `&.call` : sur une exception levée AVANT la définition du lambda, la
+    # variable locale existe mais vaut nil.
+    restaurer_les_trousseaux&.call
   end
 end
