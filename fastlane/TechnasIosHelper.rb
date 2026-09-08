@@ -214,7 +214,20 @@ module TechnasIosHelper
       sh("security default-keychain -s '#{defaut_dorigine}'") if defaut_dorigine
     end
 
-    sh("security list-keychains -d user -s #{(liste_dorigine + [keychain_path]).uniq.map { |k| "'#{k}'" }.join(' ')}")
+    # 🔴 08/09/2026, correction d'une correction. J'avais remplacé ce
+    # `-s '<jetable>'` par un AJOUT à la liste existante, pour ne pas sortir
+    # `login` de sa propre liste de recherche. Ça a CASSÉ la signature CI :
+    # sur un Mac de build qui est aussi une machine de travail, `login` et
+    # `bg-build` sont VERROUILLÉS, `SecItemCopyMatching` échoue en les
+    # parcourant, et fastlane conclut « There are no local code signing
+    # identities found » (run 34175735571, exit 65).
+    #
+    # On remplace donc de nouveau — c'est ce qui rend le build déterministe,
+    # il ne voit QUE le trousseau jetable qu'on vient de remplir. Ce qui
+    # manquait n'était pas l'ajout, c'était la RESTAURATION : elle vit
+    # maintenant dans le `ensure` de la méthode, et c'est elle qui répare le
+    # dégât d'origine (`login` sorti de sa liste, compte Xcode perdu).
+    sh("security list-keychains -d user -s '#{keychain_path}'")
     sh("security default-keychain -s '#{keychain_path}'")
 
     signable_targets = [{ identifier: app_identifier, target: "Runner" }] + extensions
