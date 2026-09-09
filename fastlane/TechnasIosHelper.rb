@@ -43,6 +43,82 @@ module TechnasIosHelper
   # parlent à Apple (release, build_only, development). Extraite ici à la 2e
   # utilisation : dupliquer les 5 ENV c'est se garantir qu'un jour l'une des
   # copies aura un nom de variable en retard sur l'autre.
+  # Soumet à la vérification App Store la version déjà montée, avec les notes
+  # de version VERSIONNÉES dans le dépôt du produit.
+  #
+  # 🔴 §23.493. Fondateur, 09/09/2026 : « comment faire pour que ça ne s'auto
+  # deco pas ça ». La durée de session App Store Connect n'est pas réglable —
+  # la vraie réponse est de ne plus passer par le navigateur.
+  #
+  # Ce qui a coûté une soirée le 08/09 : deux apps à soumettre à la main, les
+  # notes de version recopiées en QUATRE langues dans un formulaire, une
+  # session expirée au milieu, et aucune trace de ce qui a été écrit. Les notes
+  # vivent désormais dans `<app>/ios/fastlane/metadata/<locale>/release_notes.txt`
+  # — elles passent en revue de code comme le reste, et se relisent dans
+  # l'historique.
+  #
+  # Le binaire n'est PAS renvoyé (`skip_binary_upload`) : il vient d'être monté
+  # par `upload_to_testflight` dans la même lane. Les captures non plus : elles
+  # ne changent pas à chaque correctif, et les réenvoyer allongerait la
+  # soumission sans rien apporter.
+  #
+  # ⚠️ `submission_information` déclare des choses à Apple ; ces deux valeurs ne
+  # sont pas choisies ici, elles CONSTATENT ce que le binaire dit déjà :
+  #   * `export_compliance_uses_encryption: false` reprend
+  #     `ITSAppUsesNonExemptEncryption = false` de l'Info.plist des deux apps ;
+  #   * `add_id_info_uses_idfa: false` reprend
+  #     `FacebookAdvertiserIDCollectionEnabled = FALSE`, seul SDK susceptible de
+  #     lire l'IDFA.
+  # Si l'un des deux change dans l'app, il DOIT changer ici — d'où la garde
+  # `check_la_soumission_ne_declare_rien_de_faux.py` côté produit.
+  #
+  # [publier_automatiquement] à `false` : la version approuvée attend une
+  # publication explicite. Passer à `true` met en vente dès l'approbation, ce
+  # qui n'est pas une décision d'outil.
+  def technas_soumettre_pour_verification(app_identifier:, publier_automatiquement: false)
+    api_key = technas_cle_app_store_connect
+    metadata = File.join(Dir.pwd, "metadata")
+
+    unless Dir.exist?(metadata)
+      UI.user_error!(
+        "Notes de version introuvables : #{metadata}. " \
+        "Attendu <app>/ios/fastlane/metadata/<locale>/release_notes.txt. " \
+        "Soumettre sans notes, c'est publier une mise à jour muette."
+      )
+    end
+
+    locales = Dir.children(metadata).select { |d| File.directory?(File.join(metadata, d)) }
+    vides = locales.reject do |loc|
+      f = File.join(metadata, loc, "release_notes.txt")
+      File.exist?(f) && !File.read(f).strip.empty?
+    end
+    unless vides.empty?
+      UI.user_error!(
+        "Notes de version manquantes ou vides pour : #{vides.join(', ')}. " \
+        "App Store REFUSE une soumission dont une langue n'a pas ses notes."
+      )
+    end
+
+    UI.message("Soumission avec les notes de #{locales.sort.join(', ')}")
+
+    deliver(
+      api_key: api_key,
+      app_identifier: app_identifier,
+      metadata_path: metadata,
+      skip_binary_upload: true,
+      skip_screenshots: true,
+      overwrite_screenshots: false,
+      force: true,
+      submit_for_review: true,
+      automatic_release: publier_automatiquement,
+      precheck_include_in_app_purchases: false,
+      submission_information: {
+        export_compliance_uses_encryption: false,
+        add_id_info_uses_idfa: false
+      }
+    )
+  end
+
   def technas_cle_app_store_connect
     app_store_connect_api_key(
       key_id: ENV["APP_STORE_API_KEY_ID"],
