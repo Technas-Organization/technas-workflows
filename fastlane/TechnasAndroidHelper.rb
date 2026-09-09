@@ -52,10 +52,36 @@ module TechnasAndroidHelper
       aab: aab_path,
       skip_upload_apk: true,
       json_key: json_key_path,
+      # 🔴 §23.493. Les notes de version Play n'étaient JAMAIS envoyées :
+      # `skip_upload_metadata` couvre le titre et la description, mais
+      # `skip_upload_changelogs` a son propre drapeau, laissé à `true` par
+      # défaut. Résultat : chaque mise à jour arrivait muette sur le store —
+      # personne ne savait ce qui changeait, et les corrections importantes
+      # passaient inaperçues.
+      #
+      # On garde `skip_upload_metadata` : la fiche (titre, description) se
+      # gère à part et n'a pas à être réécrite à chaque build. Seules les
+      # notes suivent le code, depuis
+      # `android/fastlane/metadata/android/<locale>/changelogs/default.txt`.
+      # `default.txt` sert quand aucun `<versionCode>.txt` n'existe : un
+      # fichier par build serait un oubli de plus à chaque release.
       skip_upload_metadata: true,
+      skip_upload_changelogs: !Dir.exist?(technas_chemin_changelogs),
+      metadata_path: technas_chemin_changelogs,
       skip_upload_images: true,
       skip_upload_screenshots: true
     )
+  end
+
+  # `<app>/android/fastlane/metadata` — le dossier que `upload_to_play_store`
+  # attend. Une lane s'exécute avec `Dir.pwd = <app>/android/fastlane`.
+  #
+  # Absent ⇒ on n'envoie pas de notes plutôt que d'échouer : tous les produits
+  # n'en ont pas encore, et une chaîne de publication qui casse pour une note
+  # manquante coûte plus qu'elle ne protège. La garde côté produit, elle, exige
+  # les quatre langues là où elles sont attendues.
+  def technas_chemin_changelogs
+    File.join(Dir.pwd, "metadata")
   end
 
   def technas_distribute_apk(apk_path:)
