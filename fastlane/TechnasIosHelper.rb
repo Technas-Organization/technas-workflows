@@ -119,6 +119,40 @@ module TechnasIosHelper
     )
   end
 
+  # Où en est la vérification App Store, sans ouvrir de navigateur.
+  #
+  # 🔴 §23.494. Fondateur, 09/09/2026 : « ajoute la lecture du statut à la CI ».
+  # Le statut d'une soumission ne se lit aujourd'hui que dans App Store Connect,
+  # dont la session expire — c'est ce qui a coûté la soirée du 08/09. L'API,
+  # elle, répond avec la clé qu'on a déjà.
+  #
+  # Rend un tableau de hashes { version, etat, build } — l'appelant décide quoi
+  # en faire. La lane, elle, se contente d'AFFICHER : décider qu'un état est
+  # une anomalie est un choix de politique, pas de lecture.
+  def technas_statut_app_store(app_identifier:)
+    require "spaceship"
+
+    Spaceship::ConnectAPI.token = Spaceship::ConnectAPI::Token.create(
+      key_id: ENV["APP_STORE_API_KEY_ID"],
+      issuer_id: ENV["APP_STORE_ISSUER_ID"],
+      filepath: ENV["APP_STORE_KEY_FILEPATH"]
+    )
+
+    app = Spaceship::ConnectAPI::App.find(app_identifier)
+    if app.nil?
+      UI.user_error!("App introuvable sur App Store Connect : #{app_identifier}")
+    end
+
+    app.get_app_store_versions.map do |v|
+      build = begin
+        v.build&.version
+      rescue StandardError
+        nil
+      end
+      { version: v.version_string, etat: v.app_store_state, build: build }
+    end
+  end
+
   def technas_cle_app_store_connect
     app_store_connect_api_key(
       key_id: ENV["APP_STORE_API_KEY_ID"],
