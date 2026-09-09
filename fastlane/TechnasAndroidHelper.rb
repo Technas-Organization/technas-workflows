@@ -46,6 +46,7 @@ module TechnasAndroidHelper
 
   def technas_deploy_android(package_name:, track: 'internal', aab_path: '../build/app/outputs/bundle/release/app-release.aab')
     json_key_path = process_json_key('PLAY_STORE_JSON_KEY')
+    technas_verifier_les_langues(technas_chemin_changelogs)
     upload_to_play_store(
       package_name: package_name,
       track: track,
@@ -67,6 +68,8 @@ module TechnasAndroidHelper
       # fichier par build serait un oubli de plus à chaque release.
       skip_upload_metadata: true,
       skip_upload_changelogs: !Dir.exist?(technas_chemin_changelogs),
+      # `metadata_path` = la racine des LANGUES (`metadata/android`), jamais
+      # `metadata` — voir `technas_chemin_changelogs`.
       metadata_path: technas_chemin_changelogs,
       skip_upload_images: true,
       skip_upload_screenshots: true
@@ -80,8 +83,39 @@ module TechnasAndroidHelper
   # n'en ont pas encore, et une chaîne de publication qui casse pour une note
   # manquante coûte plus qu'elle ne protège. La garde côté produit, elle, exige
   # les quatre langues là où elles sont attendues.
+  # 🔴 `metadata/android`, PAS `metadata`.
+  #
+  # 10/09/2026 — premier déploiement Android depuis §23.493, et il a échoué sur
+  # un « [!] android - Invalid request » de Google Play, sans autre explication.
+  # La ligne juste au-dessus disait tout : « Preparing uploads for language
+  # 'android' ». `supply` traite chaque sous-dossier de `metadata_path` comme
+  # une LANGUE ; la disposition standard étant
+  # `fastlane/metadata/android/<locale>/changelogs/`, pointer sur `metadata`
+  # faisait lire `android` comme un code de langue. Play refuse, et son message
+  # ne nomme jamais la cause.
+  #
+  # Rien ne l'avait vu parce que c'était le premier envoi RÉEL de notes : avant
+  # §23.493, `skip_upload_changelogs` valait `true`, donc `metadata_path`
+  # n'était jamais parcouru.
   def technas_chemin_changelogs
-    File.join(Dir.pwd, "metadata")
+    File.join(Dir.pwd, "metadata", "android")
+  end
+
+  # Un dossier de langue qui n'en est pas un fait échouer l'envoi sur un
+  # « Invalid request » muet. On le dit AVANT, avec le nom du coupable.
+  def technas_verifier_les_langues(chemin)
+    return unless Dir.exist?(chemin)
+
+    entrees = Dir.children(chemin).select { |e| File.directory?(File.join(chemin, e)) }
+    intrus = entrees.reject { |e| e =~ /\A[a-z]{2}(-[A-Z]{2,3})?\z/ }
+    return if intrus.empty?
+
+    FastlaneCore::UI.user_error!(
+      "#{chemin} contient #{intrus.join(', ')} — ce ne sont pas des codes de " \
+      "langue Play. `supply` les enverrait comme tels et Play répondrait " \
+      "« Invalid request » sans nommer la cause. Disposition attendue : " \
+      "fastlane/metadata/android/<locale>/changelogs/default.txt"
+    )
   end
 
   def technas_distribute_apk(apk_path:)
