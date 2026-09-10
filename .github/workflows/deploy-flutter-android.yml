@@ -174,13 +174,13 @@ jobs:
           rm -rf "${WS:?}"/*
 
       - name: Checkout app
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           submodules: ${{ inputs.submodules }}
           token: ${{ secrets.PACKAGES_PAT || github.token }}
 
       - name: Checkout technas-workflows (Dockerfile + fastlane helper + scripts)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: Technas-Organization/technas-workflows
           ref: ${{ inputs.workflows_ref }}
@@ -211,7 +211,7 @@ jobs:
       # (b) plain `docker build` sinon (comportement historique inchangé).
       - name: Set up Buildx (cache de layers image)
         if: inputs.builder_cache
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
         with:
           # http=true : le registre interne sert en HTTP (le daemon dind n'a pas
           # ce registre en insecure-registries, mais buildkit l'atteint via cette
@@ -222,7 +222,7 @@ jobs:
 
       - name: Build mobile-builder image (cache de layers distant)
         if: inputs.builder_cache
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .technas-workflows
           file: .technas-workflows/docker/mobile/Dockerfile
@@ -369,7 +369,7 @@ jobs:
               "${{ inputs.app_dir }}/build/app/outputs/bundle/release/app-release.aab"
 
       - name: Upload AAB artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         if: success()
         continue-on-error: true
         with:

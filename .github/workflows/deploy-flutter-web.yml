@@ -127,7 +127,7 @@ jobs:
       image_tag: ${{ steps.tag.outputs.image_tag }}
     steps:
       - name: Checkout app
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           submodules: ${{ inputs.submodules }}
           token: ${{ secrets.PACKAGES_PAT || github.token }}
@@ -252,7 +252,7 @@ jobs:
           fi
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
         with:
           # In-cluster mirrors so builds never touch the public hosts:
           # docker.io → Nexus dockerhub-proxy (dodges Hub 429), docker.technas.fr
@@ -287,7 +287,7 @@ jobs:
           REGISTRY: ${{ inputs.registry }}
 
       - name: Build & push (linux/amd64)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: ${{ inputs.app_dir }}
           file: ${{ inputs.app_dir }}/${{ inputs.dockerfile }}
@@ -315,7 +315,7 @@ jobs:
       DEPLOYMENT: ${{ inputs.k8s_deployment }}
     steps:
       - name: Checkout (manifests only)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           submodules: false
 

@@ -108,13 +108,13 @@ jobs:
         run: sudo rm -rf "${{ github.workspace }}"/* 2>/dev/null || true
 
       - name: Checkout app
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           submodules: ${{ inputs.submodules }}
           token: ${{ secrets.PACKAGES_PAT || github.token }}
 
       - name: Checkout technas-workflows (shared fastlane helper)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: Technas-Organization/technas-workflows
           ref: ${{ inputs.workflows_ref }}

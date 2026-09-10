@@ -41,12 +41,12 @@ jobs:
     # GitHub-hosted minutes, jobs die instantly on a billing error).
     runs-on: technas-backend-light
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           submodules: recursive
           fetch-depth: 1
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ inputs.python-version }}
 

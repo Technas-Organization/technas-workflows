@@ -69,12 +69,12 @@ jobs:
           rm -rf "${WS:?}"/*
 
       - name: Checkout app
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           token: ${{ secrets.PACKAGES_PAT || github.token }}
 
       - name: Checkout technas-workflows (Dockerfile + fastlane helper)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: Technas-Organization/technas-workflows
           ref: ${{ inputs.workflows_ref }}
