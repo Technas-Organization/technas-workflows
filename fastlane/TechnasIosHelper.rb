@@ -62,15 +62,35 @@ module TechnasIosHelper
   # ne changent pas à chaque correctif, et les réenvoyer allongerait la
   # soumission sans rien apporter.
   #
-  # ⚠️ `submission_information` déclare des choses à Apple ; ces deux valeurs ne
-  # sont pas choisies ici, elles CONSTATENT ce que le binaire dit déjà :
+  # ⚠️ `submission_information` DÉCLARE des choses à Apple. Ces valeurs ne sont
+  # pas choisies ici, elles CONSTATENT ce que le binaire dit déjà :
+  #
   #   * `export_compliance_uses_encryption: false` reprend
-  #     `ITSAppUsesNonExemptEncryption = false` de l'Info.plist des deux apps ;
-  #   * `add_id_info_uses_idfa: false` reprend
-  #     `FacebookAdvertiserIDCollectionEnabled = FALSE`, seul SDK susceptible de
-  #     lire l'IDFA.
-  # Si l'un des deux change dans l'app, il DOIT changer ici — d'où la garde
-  # `check_la_soumission_ne_declare_rien_de_faux.py` côté produit.
+  #     `ITSAppUsesNonExemptEncryption = false` de l'Info.plist des deux apps.
+  #
+  #   * 🔴 L'IDFA. Corrigé le 10/09/2026, run de soumission ARRÊTÉ en vol pour
+  #     ça. On déclarait `add_id_info_uses_idfa: false`, en se justifiant du seul
+  #     SDK Facebook (`FacebookAdvertiserIDCollectionEnabled = FALSE`) — en
+  #     oubliant AdMob, qui est lié dans les DEUX apps
+  #     (`GADApplicationIdentifier` dans `ios/Runner/Info.plist:87`, via
+  #     `packages/technas_ads` → `google_mobile_ads`) et à qui `deploy-ios.yml`
+  #     pousse ses `BG_ADMOB_*_UNIT_IOS`. La documentation du produit disait déjà
+  #     l'inverse de la lane : `docs/store-listing/README.md` — « IDFA :
+  #     répondre OUI (diffuser des annonces dans l'app) ».
+  #
+  #     La forme exacte compte autant que le OUI. Une app qui SERT des annonces
+  #     sans invite ATT déclare `serves_ads`, et RIEN d'autre :
+  #     `NSUserTrackingUsageDescription` n'existe dans aucun des deux
+  #     `Info.plist`, donc l'invite de suivi n'existe pas — et déclarer du suivi
+  #     inter-apps sans invite est un REJET automatique. D'où
+  #     `tracks_install: false`, `tracks_action: false`, et
+  #     `limits_tracking: true` (l'app respecte « Limiter le suivi publicitaire »).
+  #
+  # Déclarer faux à Apple n'est pas un détail de CI : si l'un de ces faits change
+  # dans l'app, il DOIT changer ici. La garde
+  # `check_la_soumission_ne_declare_rien_de_faux.py` côté produit lit désormais
+  # AdMob autant que Facebook — elle ne regardait que Facebook, et restait donc
+  # verte sur la contradiction pendant que la lane mentait.
   #
   # [publier_automatiquement] à `false` : la version approuvée attend une
   # publication explicite. Passer à `true` met en vente dès l'approbation, ce
@@ -114,7 +134,11 @@ module TechnasIosHelper
       precheck_include_in_app_purchases: false,
       submission_information: {
         export_compliance_uses_encryption: false,
-        add_id_info_uses_idfa: false
+        add_id_info_uses_idfa: true,
+        add_id_info_serves_ads: true,
+        add_id_info_tracks_install: false,
+        add_id_info_tracks_action: false,
+        add_id_info_limits_tracking: true
       }
     )
   end
