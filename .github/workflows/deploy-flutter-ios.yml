@@ -135,6 +135,7 @@ jobs:
           echo "/opt/homebrew/bin" >> $GITHUB_PATH
 
       - name: Xcode first launch setup
+        if: inputs.fastlane_lane != 'soumission' && inputs.fastlane_lane != 'statut'
         run: |
           sudo xcodebuild -runFirstLaunch 2>/dev/null || true
 
@@ -152,7 +153,19 @@ jobs:
           pod --version
           which pod
 
+      # 🔴 Les lanes qui ne CONSTRUISENT pas n'ont pas besoin de Flutter.
+      #
+      # 10/09/2026 — première utilisation de `soumission` (soumettre un build
+      # déjà sur TestFlight) : elle a échoué ici, sur un
+      # « Could not resolve package dependencies » de Swift Package Manager,
+      # dans une étape dont elle n'a aucun usage. `soumission` et `statut` ne
+      # touchent qu'à l'API App Store Connect : ni pods, ni archive, ni Xcode.
+      #
+      # Les faire dépendre de la chaîne de build, c'est les rendre fragiles à
+      # des pannes qui ne les concernent pas — et c'est aussi ~4 min de Mac
+      # pour rien à chaque lecture de statut (le cron en fait six par jour).
       - name: Flutter setup
+        if: inputs.fastlane_lane != 'soumission' && inputs.fastlane_lane != 'statut'
         env:
           DART_DEFINES: ${{ inputs.dart_defines }}
         run: |
