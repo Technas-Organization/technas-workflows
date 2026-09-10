@@ -95,12 +95,26 @@ module TechnasIosHelper
   # [publier_automatiquement] à `false` : la version approuvée attend une
   # publication explicite. Passer à `true` met en vente dès l'approbation, ce
   # qui n'est pas une décision d'outil.
-  def technas_soumettre_pour_verification(app_identifier:, publier_automatiquement: false)
+  # [version] : la version MARKETING à soumettre. Par défaut, celle du pubspec.
+  #
+  # 🔴 10/09/2026 — indispensable pour soumettre SANS reconstruire. Les deux
+  # `Info.plist` portent `$(FLUTTER_BUILD_NAME)`, une variable qui ne se résout
+  # qu'au build : `deliver` ne peut pas en déduire la version. Dans la lane
+  # `release_et_soumission` ça ne se voyait pas — `technas_update_version` avait
+  # déjà écrit la valeur littérale juste avant. Une lane qui ne construit pas
+  # doit donc la DIRE, sinon `deliver` cherche une version nommée
+  # « $(FLUTTER_BUILD_NAME) » et ne la trouve jamais.
+  def technas_soumettre_pour_verification(
+    app_identifier:,
+    publier_automatiquement: false,
+    version: nil
+  )
     api_key = technas_cle_app_store_connect
     metadata = File.join(Dir.pwd, "metadata")
+    version ||= sh("cd ../.. && sh get_flutter_version.sh").strip.split('+').first
 
     unless Dir.exist?(metadata)
-      UI.user_error!(
+      FastlaneCore::UI.user_error!(
         "Notes de version introuvables : #{metadata}. " \
         "Attendu <app>/ios/fastlane/metadata/<locale>/release_notes.txt. " \
         "Soumettre sans notes, c'est publier une mise à jour muette."
@@ -113,17 +127,20 @@ module TechnasIosHelper
       File.exist?(f) && !File.read(f).strip.empty?
     end
     unless vides.empty?
-      UI.user_error!(
+      FastlaneCore::UI.user_error!(
         "Notes de version manquantes ou vides pour : #{vides.join(', ')}. " \
         "App Store REFUSE une soumission dont une langue n'a pas ses notes."
       )
     end
 
-    UI.message("Soumission avec les notes de #{locales.sort.join(', ')}")
+    FastlaneCore::UI.message("Soumission avec les notes de #{locales.sort.join(', ')}")
+
+    FastlaneCore::UI.message("Soumission de la version #{version}")
 
     deliver(
       api_key: api_key,
       app_identifier: app_identifier,
+      app_version: version,
       metadata_path: metadata,
       skip_binary_upload: true,
       skip_screenshots: true,
@@ -164,7 +181,7 @@ module TechnasIosHelper
 
     app = Spaceship::ConnectAPI::App.find(app_identifier)
     if app.nil?
-      UI.user_error!("App introuvable sur App Store Connect : #{app_identifier}")
+      FastlaneCore::UI.user_error!("App introuvable sur App Store Connect : #{app_identifier}")
     end
 
     app.get_app_store_versions.map do |v|
