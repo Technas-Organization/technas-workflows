@@ -128,6 +128,15 @@ on:
         description: "Ajoute -v à `flutter build appbundle` (diagnostic, ex: identifier un plugin embedding v1)."
         type: boolean
         default: false
+      target_platforms:
+        description: >-
+          Architectures compilées (`--target-platform`), ex. 'android-arm,android-arm64'.
+          Vide = défaut Flutter (arm, arm64, x64). Chaque architecture est une compilation
+          Dart native (gen_snapshot) lancée EN PARALLÈLE dans `compileFlutterBuildRelease` :
+          en retirer une baisse le pic mémoire du conteneur et la taille de l'AAB que
+          bundletool signe dans le tas du démon Gradle.
+        type: string
+        default: ''
     secrets:
       PACKAGES_PAT:
         required: false
@@ -346,7 +355,12 @@ jobs:
           # (TechnasIosHelper#technas_update_version) pour rester cohérent.
           BN=$(( ( $(date -u +%s) - 1577836800 ) / 60 ))
           echo "::notice::versionCode (build number) auto = $BN (minutes depuis 2020)"
-          BUILD_CMD="flutter build appbundle --release --build-number=$BN$VERBOSE $define_args"
+          TARGETS=""
+          if [ -n "${{ inputs.target_platforms }}" ]; then
+            TARGETS=" --target-platform ${{ inputs.target_platforms }}"
+            echo "::notice::architectures compilées : ${{ inputs.target_platforms }}"
+          fi
+          BUILD_CMD="flutter build appbundle --release --build-number=$BN$VERBOSE$TARGETS $define_args"
           if [ "${{ inputs.gradle_cache }}" != "true" ]; then
             BUILD_CMD="flutter clean && $BUILD_CMD"
           fi
