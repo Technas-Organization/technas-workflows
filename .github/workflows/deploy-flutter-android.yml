@@ -91,6 +91,17 @@ on:
           du stockage Actions. Nécessite MINIO_ACCESS_KEY/MINIO_SECRET_KEY.
         type: boolean
         default: false
+      aab_artifact_retention_days:
+        description: >-
+          Durée de vie (jours) de l'AAB déposé en artifact GitHub ; 0 = pas
+          d'artifact. Le quota Actions du plan Free est MENSUEL et se compte en
+          Go·heures (0,5 Go × heures du mois ≈ 372 Go·h) : deux AAB de ~150 Mo
+          gardés 7 jours à chaque release l'ont épuisé le 15/09/2026, et plus
+          AUCUN artifact de l'organisation n'a pu être déposé jusqu'à la fin du
+          mois. Quand l'AAB part au Play Store (ou sur MinIO), l'artifact n'est
+          qu'une copie de secours : 1 jour suffit. 7 par défaut = inchangé.
+        type: number
+        default: 7
       gradle_cache:
         description: >-
           Active les caches distants Gradle in-cluster (proxy Maven Nexus +
@@ -384,12 +395,12 @@ jobs:
 
       - name: Upload AAB artifact
         uses: actions/upload-artifact@v4
-        if: success()
+        if: success() && inputs.aab_artifact_retention_days > 0
         continue-on-error: true
         with:
           name: ${{ inputs.app_id }}-aab
           path: ${{ inputs.app_dir }}/build/app/outputs/bundle/release/app-release.aab
-          retention-days: 7
+          retention-days: ${{ inputs.aab_artifact_retention_days }}
 
       # Livraison indépendante du quota d'artifacts GitHub (plein sur plan Free) :
       # pousse l'AAB sur MinIO via mc (le runner ARC est in-cluster, atteint

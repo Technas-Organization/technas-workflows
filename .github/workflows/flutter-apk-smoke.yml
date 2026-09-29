@@ -75,6 +75,18 @@ on:
           (ClusterIP). OFF by default — alters no existing build until enabled.
         type: boolean
         default: false
+      gradle_jvmargs:
+        description: >-
+          Optional `org.gradle.jvmargs` for THIS smoke only, written to the
+          GRADLE_USER_HOME gradle.properties (which overrides the app's project
+          gradle.properties). A debug smoke never signs a bundle (no bundletool in
+          the daemon heap), so it can run with a smaller heap than the release
+          build — and under build_memory_limit every MB of heap is a MB the Dart
+          frontend_server, aapt2 and the JVMs' native memory no longer have.
+          Requires gradle_cache (it is what points GRADLE_USER_HOME at the
+          workspace). Empty (default) = the app's own jvmargs, unchanged.
+        type: string
+        default: ''
       gradle_cache_nexus_url:
         description: "Nexus Maven group URL (download proxy). In-cluster ClusterIP."
         type: string
@@ -158,6 +170,23 @@ jobs:
             echo "kotlin.daemon.jvmargs=-Xmx640m -XX:MaxMetaspaceSize=256m"
           } > "${{ github.workspace }}/.gradle/gradle.properties"
           echo "::notice::Constrained-ARC Gradle profile: workers.max=1, parallel=false, Kotlin daemon 640m"
+          # Smoke-only daemon heap (gated by gradle_jvmargs). Passed through env,
+          # never interpolated into the script.
+          if [ -n "$GRADLE_JVMARGS" ]; then
+            echo "org.gradle.jvmargs=$GRADLE_JVMARGS" >> "${{ github.workspace }}/.gradle/gradle.properties"
+            echo "::notice::Smoke Gradle daemon jvmargs overridden: $GRADLE_JVMARGS"
+          fi
+        env:
+          GRADLE_JVMARGS: ${{ inputs.gradle_jvmargs }}
+
+      # gradle_jvmargs lives in the GRADLE_USER_HOME that only gradle_cache mounts
+      # into the build container: without it the override would be written and
+      # then silently ignored.
+      - name: Reject gradle_jvmargs without gradle_cache
+        if: inputs.gradle_jvmargs != '' && !inputs.gradle_cache
+        run: |
+          echo "::error::gradle_jvmargs needs gradle_cache: true — otherwise GRADLE_USER_HOME is not /workspace/.gradle and the override would never reach Gradle"
+          exit 1
 
       - name: Copy environment file
         if: inputs.env_copy_from != ''
