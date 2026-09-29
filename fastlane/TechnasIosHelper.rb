@@ -303,6 +303,36 @@ module TechnasIosHelper
     end
   end
 
+  # Contrôle l'Info.plist de l'app ARCHIVÉE (pas celui des sources) : c'est ce
+  # binaire-là qu'Apple lance. Échoue si le SDK >= 27 et que le cycle de vie
+  # UIScene manque — voir scripts/check_ios_uiscene.sh pour le pourquoi.
+  #
+  # `Fastlane::Actions.lane_context` et `SharedValues` QUALIFIÉS : dans ce
+  # module, une constante nue se résout en `TechnasIosHelper::…` (même piège
+  # que `UI`, cf. plus bas).
+  def technas_verifier_cycle_de_vie_scene!
+    archive = Fastlane::Actions.lane_context[Fastlane::Actions::SharedValues::XCODEBUILD_ARCHIVE].to_s
+    plists = archive.empty? ? [] : Dir.glob(File.join(archive, 'Products', 'Applications', '*.app', 'Info.plist'))
+    if plists.empty?
+      FastlaneCore::UI.user_error!(
+        "Contrôle UIScene : aucune app dans l'archive (« #{archive} »). " \
+        'Sans elle, impossible de prouver que le binaire démarre sur iOS 27 : on ne publie pas.'
+      )
+    end
+    script = File.expand_path('../scripts/check_ios_uiscene.sh', __dir__)
+    plists.each do |plist|
+      begin
+        sh('bash', script, plist)
+      rescue StandardError
+        FastlaneCore::UI.user_error!(
+          "Binaire refusé AVANT publication : #{File.basename(File.dirname(plist))} est compilé " \
+          'avec le SDK iOS 27+ sans UIApplicationSceneManifest — il serait tué au lancement ' \
+          "sur iOS 27 (refus Apple « crashed on launch », 28/09/2026). Voir #{script}."
+        )
+      end
+    end
+  end
+
   # extensions: optional list of embedded app-extension targets, e.g.
   #   [{ identifier: 'fr.technas.beautygo.app.ImageNotification', target: 'ImageNotification' }]
   # Each gets: version stamped in <target>/Info.plist, its own Match appstore
@@ -420,6 +450,12 @@ module TechnasIosHelper
     # not guess — each bundle id exports with its own Match appstore profile.
     build_options[:export_options] = { provisioningProfiles: export_profiles } unless export_profiles.empty?
     build_app(**build_options)
+
+    # 🔴 29/09/2026 — AVANT toute publication (et même en build_only) : un
+    # binaire SDK iOS >= 27 sans UIApplicationSceneManifest est TUÉ au lancement
+    # sur iOS 27. BeautyGo 1.7.105 / Pro 1.7.84 sont partis ainsi sur TestFlight
+    # puis en vérification, refusés « crashed on launch ».
+    technas_verifier_cycle_de_vie_scene!
 
     unless upload
       # `FastlaneCore::UI` qualifié, jamais `UI` nu : la constante est résolue

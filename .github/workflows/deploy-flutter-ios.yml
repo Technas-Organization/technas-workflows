@@ -153,6 +153,28 @@ jobs:
           pod --version
           which pod
 
+      # 🔴 29/09/2026 — UIScene OBLIGATOIRE à partir du SDK iOS 27.
+      #
+      # Apple a refusé BeautyGo 1.7.105 et BeautyGo Pro 1.7.84, « crashed on
+      # launch » : ce Mac compile en Xcode 27 depuis le 15/09, et une app UIKit
+      # compilée avec le SDK 27 SANS `UIApplicationSceneManifest` est tuée au
+      # lancement sur iOS 27, avant la moindre ligne de Dart. Flutter l'annonçait
+      # à chaque build (« UIScene lifecycle support will soon be required ») et
+      # le run finissait VERT.
+      #
+      # Deux contrôles, le même script (scripts/check_ios_uiscene.sh) :
+      #   * ICI, sur l'Info.plist des SOURCES, avant ~20 min de build : échec
+      #     immédiat plutôt qu'un binaire refusé deux jours plus tard ;
+      #   * APRÈS l'archive, sur l'Info.plist du BINAIRE, avant toute
+      #     publication (`technas_verifier_cycle_de_vie_scene!`, dans
+      #     fastlane/TechnasIosHelper.rb) — c'est ce binaire-là qu'Apple lance.
+      - name: Cycle de vie UIScene (SDK iOS 27+)
+        if: inputs.fastlane_lane != 'soumission' && inputs.fastlane_lane != 'statut' && inputs.fastlane_lane != 'development'
+        run: |
+          SDK_VERSION="$(xcrun --sdk iphoneos --show-sdk-version)"
+          echo "Xcode : $(xcodebuild -version | tr '\n' ' ') — SDK iphoneos ${SDK_VERSION}"
+          bash .technas-workflows/scripts/check_ios_uiscene.sh "${{ inputs.app_dir }}/ios/Runner/Info.plist" "$SDK_VERSION"
+
       # 🔴 Les lanes qui ne CONSTRUISENT pas n'ont pas besoin de Flutter.
       #
       # 10/09/2026 — première utilisation de `soumission` (soumettre un build
