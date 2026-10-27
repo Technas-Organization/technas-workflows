@@ -314,7 +314,11 @@ jobs:
     name: Rollout to Kubernetes
     needs: build
     runs-on: ${{ fromJSON(inputs.rollout_runner) }}
-    if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+    # `workflow_run` : un déploiement enchaîné après un autre (l'app web d'Auria
+    # part après « Deploy App Web », BeautyGo, 27/10/2026) déploie comme un
+    # push. Sans lui, l'image était construite et jamais posée. Seuls les
+    # builds de contrôle (pull_request) ne déploient pas.
+    if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_run' }}
     env:
       IMAGE: ${{ inputs.image_name }}
       IMAGE_TAG: ${{ needs.build.outputs.image_tag }}
