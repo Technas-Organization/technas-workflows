@@ -44,9 +44,13 @@ module TechnasAndroidHelper
     FastlaneCore::UI.user_error!("Could not extract valid JSON from #{env_var_name} after multiple decodes")
   end
 
-  def technas_deploy_android(package_name:, track: 'internal', aab_path: '../build/app/outputs/bundle/release/app-release.aab')
+  # `chemin_changelogs` : une seconde app publiée depuis le même dossier
+  # (l'app Auria de BeautyGo, `metadata_auria/android`) ; par défaut
+  # `metadata/android`, comme avant.
+  def technas_deploy_android(package_name:, track: 'internal', aab_path: '../build/app/outputs/bundle/release/app-release.aab', chemin_changelogs: nil)
+    chemin_changelogs ||= technas_chemin_changelogs
     json_key_path = process_json_key('PLAY_STORE_JSON_KEY')
-    technas_verifier_les_langues(technas_chemin_changelogs)
+    technas_verifier_les_langues(chemin_changelogs)
     upload_to_play_store(
       package_name: package_name,
       track: track,
@@ -67,10 +71,10 @@ module TechnasAndroidHelper
       # `default.txt` sert quand aucun `<versionCode>.txt` n'existe : un
       # fichier par build serait un oubli de plus à chaque release.
       skip_upload_metadata: true,
-      skip_upload_changelogs: !Dir.exist?(technas_chemin_changelogs),
+      skip_upload_changelogs: !Dir.exist?(chemin_changelogs),
       # `metadata_path` = la racine des LANGUES (`metadata/android`), jamais
       # `metadata` — voir `technas_chemin_changelogs`.
-      metadata_path: technas_chemin_changelogs,
+      metadata_path: chemin_changelogs,
       skip_upload_images: true,
       skip_upload_screenshots: true
     )

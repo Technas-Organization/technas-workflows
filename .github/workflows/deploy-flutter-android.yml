@@ -139,6 +139,19 @@ on:
         description: "Ajoute -v à `flutter build appbundle` (diagnostic, ex: identifier un plugin embedding v1)."
         type: boolean
         default: false
+      flutter_build_args:
+        description: >-
+          Arguments ajoutés à `flutter build` (ex. `-t lib/main_auria.dart -Pappli=auria`) :
+          une seconde app bâtie depuis le même dossier (point d'entrée, identifiant).
+          Vide = comportement inchangé.
+        type: string
+        default: ''
+      fastlane_lane_options:
+        description: >-
+          Options ajoutées au lane fastlane (ex. `appli:auria`), lues par le Fastfile de l'app.
+          Vide = comportement inchangé.
+        type: string
+        default: ''
       target_platforms:
         description: >-
           Architectures compilées (`--target-platform`), ex. 'android-arm,android-arm64'.
@@ -321,6 +334,7 @@ jobs:
       - name: Build Android App Bundle
         env:
           DART_DEFINES: ${{ inputs.dart_defines }}
+          FLUTTER_BUILD_ARGS: ${{ inputs.flutter_build_args }}
         run: |
           define_args=""
           if [ -n "$DART_DEFINES" ]; then
@@ -371,7 +385,8 @@ jobs:
             TARGETS=" --target-platform ${{ inputs.target_platforms }}"
             echo "::notice::architectures compilées : ${{ inputs.target_platforms }}"
           fi
-          BUILD_CMD="flutter build appbundle --release --build-number=$BN$VERBOSE$TARGETS $define_args"
+          BUILD_CMD="flutter build appbundle --release --build-number=$BN$VERBOSE$TARGETS $define_args $FLUTTER_BUILD_ARGS"
+          [ -n "$FLUTTER_BUILD_ARGS" ] && echo "::notice::arguments de build : $FLUTTER_BUILD_ARGS"
           if [ "${{ inputs.gradle_cache }}" != "true" ]; then
             BUILD_CMD="flutter clean && $BUILD_CMD"
           fi
@@ -455,7 +470,7 @@ jobs:
             -e PLAY_STORE_JSON_KEY \
             -e TECHNAS_FASTLANE_HELPERS=/workspace/.technas-workflows/fastlane \
             "$MOBILE_BUILDER_IMAGE" \
-            bash -lc 'bundle install && bundle exec fastlane deploy track:${{ inputs.track }}'
+            bash -lc 'bundle install && bundle exec fastlane deploy track:${{ inputs.track }} ${{ inputs.fastlane_lane_options }}'
 
       - name: Cleanup
         if: always()

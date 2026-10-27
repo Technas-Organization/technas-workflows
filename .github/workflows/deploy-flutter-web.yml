@@ -82,6 +82,13 @@ on:
       flutter_channel:
         type: string
         default: stable
+      flutter_build_args:
+        description: >-
+          Arguments ajoutés à `flutter build` (ex. `-t lib/main_auria.dart`) :
+          une seconde app bâtie depuis le même dossier (point d'entrée, identifiant).
+          Vide = comportement inchangé.
+        type: string
+        default: ''
       pre_build_script:
         description: |
           Optional shell run (in app_dir) AFTER `flutter pub get` and BEFORE `flutter build web`.
@@ -242,7 +249,7 @@ jobs:
           # Si un produit veut un jour ces avertissements, en faire un input
           # plutôt que de retirer le drapeau ici.
           flutter build web --release --pwa-strategy none --no-wasm-dry-run \
-            --build-number "${GITHUB_RUN_NUMBER:-0}" "${define_args[@]}"
+            --build-number "${GITHUB_RUN_NUMBER:-0}" "${define_args[@]}" ${{ inputs.flutter_build_args }}
           # Sync version.json (served at /version.json, polled by the banner) to
           # the same build_number. Flutter writes this file; rewrite the field.
           # No-op for products whose Dockerfile later overwrites version.json.

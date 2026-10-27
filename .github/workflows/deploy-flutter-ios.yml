@@ -49,6 +49,19 @@ on:
         description: "Optional file (relative to app_dir) to copy to <app_dir>/.env before build (e.g. config/env.mobile). The app reads it at runtime via flutter_dotenv."
         type: string
         default: ''
+      flutter_build_args:
+        description: >-
+          Arguments ajoutés à `flutter build` (ex. `-t lib/main_auria.dart --flavor auria`) :
+          une seconde app bâtie depuis le même dossier (point d'entrée, identifiant).
+          Vide = comportement inchangé.
+        type: string
+        default: ''
+      fastlane_lane_options:
+        description: >-
+          Options ajoutées au lane fastlane (ex. `appli:auria`), lues par le Fastfile de l'app.
+          Vide = comportement inchangé.
+        type: string
+        default: ''
       match_force_refresh:
         description: "Force Match to regenerate the provisioning profile (after an entitlement change). Bypasses readonly for one run."
         type: boolean
@@ -228,7 +241,7 @@ jobs:
           fi
           ios_config_pass() {
             LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 \
-              flutter build ios --config-only --no-codesign $define_args
+              flutter build ios --config-only --no-codesign $define_args ${{ inputs.flutter_build_args }}
           }
           # Self-heal flaky SwiftPM resolution on the persistent Mac runner.
           # xcodebuild intermittently fails with "no versions of
@@ -347,7 +360,7 @@ jobs:
       - name: Deploy to TestFlight via Fastlane
         working-directory: ${{ inputs.app_dir }}/ios
         run: |
-          arch -arm64 bundle exec fastlane ${{ inputs.fastlane_lane }}
+          arch -arm64 bundle exec fastlane ${{ inputs.fastlane_lane }} ${{ inputs.fastlane_lane_options }}
         env:
           # The per-app Fastfile requires the shared helper via this env var.
           TECHNAS_FASTLANE_HELPERS: ${{ github.workspace }}/.technas-workflows/fastlane
