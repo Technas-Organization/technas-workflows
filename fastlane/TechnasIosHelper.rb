@@ -107,10 +107,11 @@ module TechnasIosHelper
   def technas_soumettre_pour_verification(
     app_identifier:,
     publier_automatiquement: false,
-    version: nil
+    version: nil,
+    dossier_metadata: "metadata"
   )
     api_key = technas_cle_app_store_connect
-    metadata = File.join(Dir.pwd, "metadata")
+    metadata = File.join(Dir.pwd, dossier_metadata)
     version ||= sh("cd ../.. && sh get_flutter_version.sh").strip.split('+').first
 
     unless Dir.exist?(metadata)
@@ -342,7 +343,11 @@ module TechnasIosHelper
   # upload: false construit et signe SANS publier sur TestFlight — sert aux
   # vérifications de chaîne CI (lane `build_only`) qui ne doivent rien diffuser
   # aux testeurs. Défaut true : comportement inchangé pour tous les produits.
-  def technas_release_ios(app_identifier:, app_name: 'App', match_readonly: true, skip_waiting: true, extensions: [], upload: true)
+  # `scheme` / `configuration` : une seconde app bâtie depuis le même projet Xcode
+  # (l'app Auria de BeautyGo : schéma `auria`, configuration `Release-auria`). Par
+  # défaut, `Runner` et `Release`, comme avant.
+  def technas_release_ios(app_identifier:, app_name: 'App', match_readonly: true, skip_waiting: true, extensions: [], upload: true,
+                          scheme: "Runner", configuration: "Release")
     technas_update_version(extra_plists: extensions.map { |e| "#{e[:target]}/Info.plist" })
     setup_ci(force: true)
 
@@ -422,7 +427,7 @@ module TechnasIosHelper
           xcodeproj: "Runner.xcodeproj",
           profile: profile_path,
           target_filter: t[:target],
-          build_configuration: "Release"
+          build_configuration: configuration
         )
       end
 
@@ -433,7 +438,8 @@ module TechnasIosHelper
           team_id: team_id,
           profile_name: profile_name,
           code_sign_identity: "Apple Distribution",
-          targets: [t[:target]]
+          targets: [t[:target]],
+          **(configuration == "Release" ? {} : { build_configurations: [configuration] })
         )
         export_profiles[t[:identifier]] = profile_name
       end
@@ -441,7 +447,8 @@ module TechnasIosHelper
 
     build_options = {
       workspace: "Runner.xcworkspace",
-      scheme: "Runner",
+      scheme: scheme,
+      configuration: configuration,
       export_method: "app-store",
       disable_xcpretty: true,
       xcargs: "DEVELOPMENT_TEAM=#{team_id} OTHER_CODE_SIGN_FLAGS='--keychain #{keychain_path}'"
