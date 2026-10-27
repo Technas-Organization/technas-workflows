@@ -441,7 +441,16 @@ module TechnasIosHelper
           targets: [t[:target]],
           **(configuration == "Release" ? {} : { build_configurations: [configuration] })
         )
-        export_profiles[t[:identifier]] = profile_name
+        # 🔴 28/10/2026 — l'export désigne le profil par son UUID (celui que
+        # match vient d'installer), plus par son nom. Après un
+        # MATCH_FORCE_REFRESH, le Mac garde l'ancien profil du MÊME nom, fait
+        # pour un autre certificat de distribution (le compte en a trois du
+        # même nom) : `exportArchive` le prenait et refusait l'archive —
+        # « Provisioning profile "match AppStore fr.technas.auria" doesn't
+        # include signing certificate » (BeautyGo, run 40527877509). Apple
+        # accepte un nom OU un UUID dans `provisioningProfiles`.
+        export_profiles[t[:identifier]] =
+          ENV["sigh_#{t[:identifier]}_appstore"].to_s.empty? ? profile_name : ENV["sigh_#{t[:identifier]}_appstore"]
       end
     end
 
